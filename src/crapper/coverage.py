@@ -368,9 +368,11 @@ def _jacoco_from_index(classes, class_names, method_name, line) -> float | None:
             pool.append(method)
     if not pool:
         return None
-    for method in pool:
-        if method.line == line:
-            return method.percent
+    # The same class name can exist in two Gradle modules. Keep the higher
+    # coverage so a 0% copy of the class does not hide a module that ran.
+    exact = [method for method in pool if method.line == line]
+    if exact:
+        return max(method.percent for method in exact)
     nearest = min(pool, key=lambda method: abs(method.line - line))
     return nearest.percent
 
@@ -566,17 +568,18 @@ _JACOCO_REPORTS = (
     "target/site/jacoco/jacoco.xml",
     "build/reports/jacoco/test/jacocoTestReport.xml",
 )
-# One report built from every module's exec file and main classes. A test in
-# the root project often executes subproject classes, which the root
+# One XML file per module, built from every module's exec data. A single
+# JaCoCo report cannot contain two classes of the same name, and a test in
+# the root project often executes subproject classes that the root
 # jacocoTestReport task does not analyze.
-MERGED_JACOCO = Path("build/reports/jacoco/crapper/jacoco.xml")
+MERGED_JACOCO_DIR = Path("build/reports/jacoco/crapper")
 
 
 def _jacoco_report_paths(root: Path) -> list[Path]:
-    merged = root / MERGED_JACOCO
-    if merged.is_file():
+    merged = sorted((root / MERGED_JACOCO_DIR).glob("*.xml"))
+    if merged:
         reports = ("target/site/jacoco/jacoco.xml",)
-        paths = [merged]
+        paths = list(merged)
     else:
         reports = _JACOCO_REPORTS
         paths = []

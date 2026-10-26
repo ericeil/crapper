@@ -16,7 +16,7 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-from crapper.coverage import MERGED_JACOCO
+from crapper.coverage import MERGED_JACOCO_DIR
 
 from crapper.discover import is_test_file, language_of
 
@@ -517,7 +517,8 @@ def gradle_command(
 
     wrapper = _nearest(module, "gradlew", root)
     gradle = str(wrapper / "gradlew") if wrapper is not None else "gradle"
-    return [gradle, "--init-script", str(init_script), "test", *extra, "jacocoTestReport"]
+    # --continue so a failing test task in one module does not skip the rest.
+    return [gradle, "--init-script", str(init_script), "--continue", "test", *extra, "jacocoTestReport"]
 
 
 def maven_command(extra: list[str] | tuple[str, ...] = ()) -> list[str]:
@@ -661,12 +662,19 @@ def _jacoco_cli_jar() -> Path | None:
     return jar
 
 
+def _merged_report_path(root: Path, classes: Path) -> Path:
+    relative = classes.relative_to(root).as_posix().replace("/", "_")
+    return root / MERGED_JACOCO_DIR / f"{relative}.xml"
+
+
 def _write_merged_jacoco(root: Path) -> None:
-    """One XML report for every module's exec data and main classes.
+    """XML reports for every module's main classes, using every exec file.
 
     Gradle's jacocoTestReport task only analyzes the classes of its own
     project. A root test that calls into a subproject then shows 0% for that
-    code even though the exec file recorded it.
+    code even though the exec file recorded it. JaCoCo also refuses one
+    report that contains two classes of the same name, so each class
+    directory is reported on its own.
     """
 
     classes = jacoco_class_dirs(root)
@@ -679,12 +687,20 @@ def _write_merged_jacoco(root: Path) -> None:
     cli = _jacoco_cli_jar()
     if cli is None:
         return
-    xml = root / MERGED_JACOCO
-    xml.parent.mkdir(parents=True, exist_ok=True)
-    code = run_shell(jacoco_report_command("java", cli, execs, classes, xml), root)
-    if code != 0 or not xml.is_file():
+    out = root / MERGED_JACOCO_DIR
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    wrote = False
+    for classes_dir in classes:
+        xml = _merged_report_path(root, classes_dir)
+        code = run_shell(jacoco_report_command("java", cli, execs, [classes_dir], xml), root)
+        if code != 0 or not xml.is_file():
+            xml.unlink(missing_ok=True)
+            continue
+        wrote = True
+    if not wrote:
         _warn("JaCoCo could not merge module reports. Per-module reports will be used.")
-        xml.unlink(missing_ok=True)
 
 
 def _cover_go(root: Path, files: list[Path]) -> None:

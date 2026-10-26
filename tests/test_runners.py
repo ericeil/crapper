@@ -436,6 +436,7 @@ def test_gradle_command_prefers_the_wrapper_and_passes_the_init_script(tmp_path)
         "gradle",
         "--init-script",
         str(init),
+        "--continue",
         "test",
         "jacocoTestReport",
     ]
@@ -520,11 +521,12 @@ def test_gradle_run_merges_module_exec_files(tmp_path, monkeypatch):
     _write(tmp_path, "lib/core/build/classes/java/main/B.class", "x")
     _write(tmp_path, "build/jacoco/test.exec", "x")
     run_coverage(tmp_path, [_write(tmp_path, "src/A.java", "class A {}\n")], None)
-    report = commands[-1]
-    assert report[4] == "report"
-    assert "--classfiles" in report
-    assert str(tmp_path / "lib/core/build/classes/java/main") in report
-    assert (tmp_path / "build/reports/jacoco/crapper/jacoco.xml").is_file()
+    reports = [command for command in commands if len(command) > 4 and command[4] == "report"]
+    assert len(reports) == 2
+    classfiles = [command[command.index("--classfiles") + 1] for command in reports]
+    assert str(tmp_path / "lib/core/build/classes/java/main") in classfiles
+    assert str(tmp_path / "build/classes/kotlin/main") in classfiles
+    assert list((tmp_path / "build/reports/jacoco/crapper").glob("*.xml"))
 
 
 def test_gradle_run_applies_jacoco_through_a_temporary_init_script(tmp_path, monkeypatch):
