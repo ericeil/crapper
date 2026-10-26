@@ -87,6 +87,21 @@ By default a run deletes the previous report for each language it is about to me
 
 A missing tool or a failed test run scores that language at 0% and still writes the snapshot. Pass `--coverage-command` to replace those defaults with one command of your own. `--no-coverage` is the run that leaves coverage and CRAP as N/A.
 
+Gradle and Maven builds sometimes need an extra argument before JaCoCo will record anything. Repeat `--gradle-arg` or `--maven-arg` for each one. A value may start with `-`, and `--gradle-arg=-Dname` is the same as `--gradle-arg -Dname`. Arguments are appended after `test jacocoTestReport` or the Maven goals, so `-D` properties, `-P` properties, and task options such as `--tests` all fit:
+
+```bash
+./crapper --gradle-arg=-DJacoco
+./crapper --gradle-arg=--tests --gradle-arg=com.example.HashTest
+./crapper --maven-arg=-DskipITs
+```
+
+The same lists can live in `crapper.toml` at the project root. Command-line arguments are added after the file, so a one-off run extends the project's defaults. These arguments are not passed through to `--coverage-command`.
+
+```toml
+gradle-args = ["-DJacoco"]
+maven-args = ["-DskipITs"]
+```
+
 ## Development
 
 ```bash

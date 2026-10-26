@@ -217,7 +217,10 @@ def test_selects_directories_filters_and_changed_files(tmp_path, monkeypatch, ca
 def test_run_asks_for_coverage_when_it_is_enabled(tmp_path, monkeypatch):
     _write(tmp_path, "src/demo/core.clj", "(ns demo.core)\n\n(defn choose [x]\n  x)\n")
     called = []
-    monkeypatch.setattr("crapper.cli.run_coverage", lambda *args: called.append(args))
+    monkeypatch.setattr(
+        "crapper.cli.run_coverage",
+        lambda *args, **kwargs: called.append((args, kwargs)),
+    )
     assert run(["--root", str(tmp_path), "--coverage-command", "true"]) == 0
     assert called
 
@@ -235,6 +238,64 @@ def test_parse_args_reads_the_process_arguments_after_the_program(monkeypatch):
     assert options.threshold == 5.0
     assert options.positionals == []
     assert options.action == "analyze"
+
+
+def test_build_tool_arguments_accept_a_leading_dash_and_a_project_file(tmp_path, monkeypatch):
+    _write(tmp_path, "src/A.java", "class A {}\n")
+    _write(tmp_path, "build.gradle", "")
+    seen = {}
+
+    def fake(root, files, command, gradle_args=(), maven_args=()):
+        seen["gradle"] = list(gradle_args)
+        seen["maven"] = list(maven_args)
+        return 0
+
+    monkeypatch.setattr("crapper.cli.run_coverage", fake)
+    assert (
+        run(
+            [
+                "--root",
+                str(tmp_path),
+                "--gradle-arg",
+                "-DJacoco",
+                "--gradle-arg=--tests",
+                "--maven-arg=-DskipITs",
+            ]
+        )
+        == 0
+    )
+    assert seen["gradle"] == ["-DJacoco", "--tests"]
+    assert seen["maven"] == ["-DskipITs"]
+
+    _write(
+        tmp_path,
+        "crapper.toml",
+        'gradle-args = ["-DJacoco"]\nmaven-args = ["-q"]\n',
+    )
+    assert run(["--root", str(tmp_path), "--gradle-arg", "--offline"]) == 0
+    assert seen["gradle"] == ["-DJacoco", "--offline"]
+    assert seen["maven"] == ["-q"]
+
+    _write(tmp_path, "crapper.toml", "gradle-args = 1\n")
+    assert run(["--root", str(tmp_path)]) == 1
+    assert run(["--gradle-arg"]) == 1
+    assert run(["--gradle-arg="]) == 1
+    _write(tmp_path, "crapper.toml", "not-a-setting = true\n")
+    assert run(["--root", str(tmp_path), "--no-coverage"]) == 1
+    (tmp_path / "crapper.toml").unlink()
+    assert (
+        run(
+            [
+                "--root",
+                str(tmp_path),
+                "--coverage-command",
+                "true",
+                "--gradle-arg",
+                "-DJacoco",
+            ]
+        )
+        == 0
+    )
 
 
 def test_flags_that_only_store_a_boolean():

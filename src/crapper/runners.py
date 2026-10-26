@@ -498,12 +498,28 @@ def _runs_inside(module: Path, modules: set[Path]) -> bool:
     )
 
 
-def gradle_command(module: Path, root: Path, init_script: Path) -> list[str]:
-    """The nearest Gradle wrapper, so a subproject uses its build's wrapper."""
+def gradle_command(
+    module: Path,
+    root: Path,
+    init_script: Path,
+    extra: list[str] | tuple[str, ...] = (),
+) -> list[str]:
+    """The nearest Gradle wrapper, so a subproject uses its build's wrapper.
+
+    `extra` is appended after the tasks. That is where Gradle accepts `-D`
+    system properties, `-P` project properties, and task options such as
+    `--tests`.
+    """
 
     wrapper = _nearest(module, "gradlew", root)
     gradle = str(wrapper / "gradlew") if wrapper is not None else "gradle"
-    return [gradle, "--init-script", str(init_script), "test", "jacocoTestReport"]
+    return [gradle, "--init-script", str(init_script), "test", "jacocoTestReport", *extra]
+
+
+def maven_command(extra: list[str] | tuple[str, ...] = ()) -> list[str]:
+    """JaCoCo's Maven goals, plus any extra arguments from the user."""
+
+    return [*_MAVEN, *extra]
 
 
 def _cover_clojure(root: Path) -> None:
@@ -519,7 +535,12 @@ def _cover_clojure(root: Path) -> None:
         _warn(f"Clojure coverage exited {code}. Clojure coverage will score 0%.")
 
 
-def _cover_jvm(root: Path, files: list[Path]) -> None:
+def _cover_jvm(
+    root: Path,
+    files: list[Path],
+    gradle_args: list[str] | tuple[str, ...],
+    maven_args: list[str] | tuple[str, ...],
+) -> None:
     """Java and Kotlin share one JaCoCo run per module."""
 
     modules = _modules_with(files, _JVM_SUFFIXES, "pom.xml", root)
@@ -527,26 +548,28 @@ def _cover_jvm(root: Path, files: list[Path]) -> None:
     if not modules and not gradle:
         _warn("No pom.xml or build.gradle; skipping Java and Kotlin coverage.")
         return
-    _cover_maven(modules)
-    _cover_gradle(root, gradle)
+    _cover_maven(modules, maven_args)
+    _cover_gradle(root, gradle, gradle_args)
 
 
 def _jvm_failure(code: int, module: Path) -> str:
     return f"JaCoCo coverage exited {code} in {module}. Java and Kotlin coverage will score 0%."
 
 
-def _cover_maven(modules: list[Path]) -> None:
+def _cover_maven(modules: list[Path], extra: list[str] | tuple[str, ...]) -> None:
     for module in modules:
         _clean_dir(module / "target" / "site" / "jacoco")
         exec_file = module / "target" / "jacoco.exec"
         if exec_file.exists():
             exec_file.unlink()
-        code = run_shell(_MAVEN, module)
+        code = run_shell(maven_command(extra), module)
         if code != 0:
             _warn(_jvm_failure(code, module))
 
 
-def _cover_gradle(root: Path, modules: list[Path]) -> None:
+def _cover_gradle(
+    root: Path, modules: list[Path], extra: list[str] | tuple[str, ...]
+) -> None:
     if not modules:
         return
     with tempfile.TemporaryDirectory() as scratch:
@@ -554,7 +577,7 @@ def _cover_gradle(root: Path, modules: list[Path]) -> None:
         init_script.write_text(_GRADLE_INIT, encoding="utf-8")
         for module in modules:
             (module / _GRADLE_REPORT).unlink(missing_ok=True)
-            code = run_shell(gradle_command(module, root, init_script), module)
+            code = run_shell(gradle_command(module, root, init_script, extra), module)
             if code != 0:
                 _warn(_jvm_failure(code, module))
 
@@ -666,7 +689,13 @@ def _cover_rust(root: Path, files: list[Path]) -> None:
             _warn(f"Rust coverage exited {code} in {module}. Rust coverage will score 0%.")
 
 
-def run_coverage(root: Path, files: list[Path], command: str | None) -> int:
+def run_coverage(
+    root: Path,
+    files: list[Path],
+    command: str | None,
+    gradle_args: list[str] | tuple[str, ...] = (),
+    maven_args: list[str] | tuple[str, ...] = (),
+) -> int:
     """Generate coverage reports for the languages present in `files`.
 
     Returns the custom command's status. A non-zero status means the caller
@@ -688,7 +717,7 @@ def run_coverage(root: Path, files: list[Path], command: str | None) -> int:
     if "clojure" in languages:
         _cover_clojure(root)
     if languages & {"java", "kotlin"}:
-        _cover_jvm(root, files)
+        _cover_jvm(root, files, gradle_args, maven_args)
     if "go" in languages:
         _cover_go(root, files)
     if "typescript" in languages:
