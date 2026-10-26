@@ -6,6 +6,9 @@ import pytest
 from crapper.discover import is_test_file
 from crapper.runners import (
     PackageJsonError,
+    jacoco_class_dirs,
+    jacoco_exec_files,
+    jacoco_report_command,
     _clean_clojure,
     _clean_dir,
     _coverage_report,
@@ -21,6 +24,7 @@ from crapper.runners import (
     _vitest_version,
     gradle_command,
     gradle_modules,
+    maven_command,
     python_coverage_commands,
     python_roots,
     python_sources,
@@ -432,7 +436,14 @@ def test_gradle_command_prefers_the_wrapper_and_passes_the_init_script(tmp_path)
         "gradle",
         "--init-script",
         str(init),
+        "--continue",
         "test",
+        "jacocoTestReport",
+    ]
+    assert gradle_command(module, tmp_path, init, ["-DJacoco", "--tests", "demo.AppTest"])[-4:] == [
+        "-DJacoco",
+        "--tests",
+        "demo.AppTest",
         "jacocoTestReport",
     ]
     _write(tmp_path, "gradlew", "#!/bin/sh\n")
@@ -441,6 +452,81 @@ def test_gradle_command_prefers_the_wrapper_and_passes_the_init_script(tmp_path)
     command = gradle_command(module, tmp_path, init)
     assert isinstance(command, list)
     assert command[0] == str(module / "gradlew")
+
+
+def test_extra_gradle_and_maven_arguments_are_appended(tmp_path, monkeypatch):
+    commands: list[list[str]] = []
+
+    def shell(command, cwd):
+        commands.append(list(command))
+        return 0
+
+    monkeypatch.setattr("crapper.runners.run_shell", shell)
+    _write(tmp_path, "build.gradle", "")
+    run_coverage(
+        tmp_path,
+        [_write(tmp_path, "src/A.java", "class A {}\n")],
+        None,
+        gradle_args=["-DJacoco", "--tests", "demo.AppTest"],
+    )
+    assert commands[0][-4:] == ["-DJacoco", "--tests", "demo.AppTest", "jacocoTestReport"]
+
+    maven_root = tmp_path / "maven"
+    _write(maven_root, "pom.xml", "<project/>\n")
+    run_coverage(
+        maven_root,
+        [_write(maven_root, "src/A.java", "class A {}\n")],
+        None,
+        maven_args=["-DskipITs"],
+    )
+    assert commands[1][0] == "mvn"
+    assert commands[1][-1] == "-DskipITs"
+    assert maven_command(["-DskipITs"])[-1] == "-DskipITs"
+
+
+def test_merged_jacoco_report_sees_every_module(tmp_path):
+    classes = [
+        _write(tmp_path, "build/classes/kotlin/main/demo/App.class", "x").parents[1],
+        _write(tmp_path, "lib/core/build/classes/java/main/demo/Core.class", "x").parents[1],
+    ]
+    execs = [
+        _write(tmp_path, "build/jacoco/test.exec", "x"),
+        _write(tmp_path, "lib/core/build/jacoco/test.exec", "x"),
+    ]
+    _write(tmp_path, "target/build/classes/java/main/Skipped.class", "x")
+    _write(tmp_path, ".git/build/jacoco/test.exec", "x")
+    assert jacoco_class_dirs(tmp_path) == classes
+    assert jacoco_exec_files(tmp_path) == execs
+    command = jacoco_report_command("java", tmp_path / "cli.jar", execs, classes, tmp_path / "out.xml")
+    assert command[:5] == ["java", "-Xmx2g", "-jar", str(tmp_path / "cli.jar"), "report"]
+    assert str(execs[0]) in command and str(execs[1]) in command
+    assert command[command.index("--classfiles") + 1] == str(classes[0])
+    assert command[-2:] == ["--name", "crapper"]
+
+
+def test_gradle_run_merges_module_exec_files(tmp_path, monkeypatch):
+    commands: list[list[str]] = []
+
+    def shell(command, cwd):
+        commands.append(list(command))
+        if command[4:5] == ["report"]:
+            Path(command[command.index("--xml") + 1]).write_text("<report/>", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr("crapper.runners.run_shell", shell)
+    monkeypatch.setattr("crapper.runners._jacoco_cli_jar", lambda: tmp_path / "cli.jar")
+    monkeypatch.setattr("crapper.runners.shutil.which", lambda name: "/usr/bin/java")
+    _write(tmp_path, "build.gradle", "")
+    _write(tmp_path, "build/classes/kotlin/main/A.class", "x")
+    _write(tmp_path, "lib/core/build/classes/java/main/B.class", "x")
+    _write(tmp_path, "build/jacoco/test.exec", "x")
+    run_coverage(tmp_path, [_write(tmp_path, "src/A.java", "class A {}\n")], None)
+    reports = [command for command in commands if len(command) > 4 and command[4] == "report"]
+    assert len(reports) == 2
+    classfiles = [command[command.index("--classfiles") + 1] for command in reports]
+    assert str(tmp_path / "lib/core/build/classes/java/main") in classfiles
+    assert str(tmp_path / "build/classes/kotlin/main") in classfiles
+    assert list((tmp_path / "build/reports/jacoco/crapper").glob("*.xml"))
 
 
 def test_gradle_run_applies_jacoco_through_a_temporary_init_script(tmp_path, monkeypatch):

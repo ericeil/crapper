@@ -180,6 +180,40 @@ def test_load_bundle_reads_gradle_jacoco_reports_at_each_depth(tmp_path):
         assert bundle.percent_for(found) == 75.0
 
 
+def test_duplicate_jacoco_methods_keep_the_higher_coverage():
+    xml = """<report><package>
+      <class name="demo/Root"><method name="f" line="2">
+        <counter type="INSTRUCTION" missed="4" covered="0"/></method></class>
+      <class name="demo/Root"><method name="f" line="2">
+        <counter type="INSTRUCTION" missed="1" covered="3"/></method></class>
+    </package></report>"""
+    bundle = CoverageBundle(jacoco=parse_jacoco_index(xml))
+    found = function(language="java", name="f", namespace="demo.Root", start_line=2)
+    assert bundle.percent_for(found) == 75.0
+
+
+def test_a_merged_gradle_report_replaces_per_module_reports(tmp_path):
+    merged = tmp_path / "build/reports/jacoco/crapper/classes_kotlin_main.xml"
+    merged.parent.mkdir(parents=True)
+    merged.write_text(
+        '<report><package><class name="demo/Root"><method name="f" line="2">'
+        '<counter type="INSTRUCTION" missed="0" covered="4"/></method>'
+        "</class></package></report>",
+        encoding="utf-8",
+    )
+    per_module = tmp_path / "lib/core/build/reports/jacoco/test/jacocoTestReport.xml"
+    per_module.parent.mkdir(parents=True)
+    per_module.write_text(
+        '<report><package><class name="demo/Root"><method name="f" line="2">'
+        '<counter type="INSTRUCTION" missed="4" covered="0"/></method>'
+        "</class></package></report>",
+        encoding="utf-8",
+    )
+    bundle = load_bundle(tmp_path)
+    found = function(language="java", name="f", namespace="demo.Root", start_line=2)
+    assert bundle.percent_for(found) == 100.0
+
+
 KOTLIN_JACOCO = """<?xml version="1.0"?>
 <report>
   <package>

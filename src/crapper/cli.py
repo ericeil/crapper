@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from crapper.analyze import analyze_files
+from crapper.config import ConfigError, build_tool_args
 from crapper.coverage import CoverageBundle, load_bundle
 from crapper.discover import (
     CLOJURE_TEST_SUFFIXES,
@@ -58,6 +59,11 @@ Options:
   --use-existing-coverage       Read coverage already on disk. Do not rerun tests.
   --coverage-command <cmd>      Run this command instead of the per-language
                                 coverage tools, then read the reports it wrote.
+  --gradle-arg <arg>            Extra argument for the Gradle JaCoCo run.
+                                Repeat for more than one. A value may start
+                                with '-', as in --gradle-arg=-DJacoco.
+  --maven-arg <arg>             Extra argument for the Maven JaCoCo run.
+                                Repeat for more than one.
   --threshold <number>          Exit 2 when the worst CRAP score is above this.
 
 Arguments:
@@ -72,7 +78,9 @@ named {_SKIPPED_DIRS} are skipped, as are {_TEST_PATTERNS}.
 Coverage, when it is produced:
   Clojure      clj -M:cov --lcov, then Cloverage form counts or LCOV
   Java/Kotlin  Maven or Gradle JaCoCo instruction coverage, for each pom.xml
-               or build.gradle module
+               or build.gradle module. Extra arguments come from crapper.toml
+               (gradle-args, maven-args) and then from --gradle-arg and
+               --maven-arg. They are not added to --coverage-command.
   Go           go test ./... -coverprofile=...
   TypeScript   npm run coverage, Vitest's own LCOV, or c8 around npm test
   Rust         cargo llvm-cov, or cargo tarpaulin, in the nearest Cargo.toml
@@ -100,6 +108,8 @@ class Options:
     no_coverage: bool = False
     use_existing_coverage: bool = False
     coverage_command: str | None = None
+    gradle_args: list[str] = field(default_factory=list)
+    maven_args: list[str] = field(default_factory=list)
     threshold: float | None = None
     changed: bool = False
 
@@ -108,6 +118,24 @@ def _take(args: list[str], index: int, option: str) -> str:
     if index + 1 >= len(args) or not args[index + 1] or args[index + 1].startswith("-"):
         raise ValueError(f"{option} requires a value")
     return args[index + 1]
+
+
+def _option_value(args: list[str], index: int, option: str) -> tuple[str, int]:
+    """The value of `option`, either `--option=value` or the next argument.
+
+    The next argument may itself start with `-`, so `--gradle-arg -DJacoco`
+    and `--gradle-arg=--tests` both work.
+    """
+
+    prefix = option + "="
+    if args[index].startswith(prefix):
+        value = args[index][len(prefix) :]
+        if not value:
+            raise ValueError(f"{option} requires a value")
+        return value, index + 1
+    if index + 1 >= len(args) or args[index + 1] == "":
+        raise ValueError(f"{option} requires a value")
+    return args[index + 1], index + 2
 
 
 def parse_args(argv: list[str] | None = None) -> Options:
@@ -130,6 +158,14 @@ def parse_args(argv: list[str] | None = None) -> Options:
             if arg == "--coverage-command":
                 options.coverage_command = _take(args, index, arg)
                 index += 2
+                continue
+            if arg == "--gradle-arg" or arg.startswith("--gradle-arg="):
+                value, index = _option_value(args, index, "--gradle-arg")
+                options.gradle_args.append(value)
+                continue
+            if arg == "--maven-arg" or arg.startswith("--maven-arg="):
+                value, index = _option_value(args, index, "--maven-arg")
+                options.maven_args.append(value)
                 continue
             if arg == "--threshold":
                 raw = _take(args, index, arg)
@@ -282,12 +318,29 @@ def _show_help(options: Options) -> int:
     return options.exit_code
 
 
-def _coverage_bundle(options: Options, root: Path, files: list[Path]):
+def _coverage_bundle(
+    options: Options,
+    root: Path,
+    files: list[Path],
+    gradle_args: list[str],
+    maven_args: list[str],
+):
     if options.no_coverage:
         return None
     if options.use_existing_coverage:
         return load_bundle(root)
-    status = run_coverage(root, files, options.coverage_command)
+    if options.coverage_command and (gradle_args or maven_args):
+        print(
+            "--gradle-arg and --maven-arg are not added to --coverage-command.",
+            file=sys.stderr,
+        )
+    status = run_coverage(
+        root,
+        files,
+        options.coverage_command,
+        gradle_args=gradle_args,
+        maven_args=maven_args,
+    )
     if options.coverage_command and status not in (0, None):
         return CoverageBundle()
     return load_bundle(root)
@@ -313,7 +366,11 @@ def run(argv: list[str] | None = None) -> int:
 
     root = options.project_root.resolve()
     try:
+        configured_gradle, configured_maven = build_tool_args(root)
         files = select_files(options)
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     except GitError as exc:
         print(str(exc), file=sys.stderr)
         return exc.code
@@ -321,7 +378,17 @@ def run(argv: list[str] | None = None) -> int:
         print("No source files to analyze.")
         return 0
 
-    entries = analyze_files(files, root, _coverage_bundle(options, root, files))
+    entries = analyze_files(
+        files,
+        root,
+        _coverage_bundle(
+            options,
+            root,
+            files,
+            [*configured_gradle, *options.gradle_args],
+            [*configured_maven, *options.maven_args],
+        ),
+    )
     metrics = write_metrics(entries, root)
     print(format_report(entries), end="", flush=True)
     print(f"Wrote {metrics}", file=sys.stderr)

@@ -79,13 +79,28 @@ By default a run deletes the previous report for each language it is about to me
 | Language | Command | Report |
 | --- | --- | --- |
 | Clojure | `clj -M:cov --lcov` (needs `deps.edn` or `bb.edn`) | `target/coverage/` |
-| Java, Kotlin | JaCoCo Maven plugin `0.8.12` in each module with `pom.xml`; otherwise `gradlew` or `gradle` with an init script that applies `jacoco`, then `test jacocoTestReport` | `target/site/jacoco/jacoco.xml` or `build/reports/jacoco/test/jacocoTestReport.xml` |
+| Java, Kotlin | JaCoCo Maven plugin `0.8.12` in each module with `pom.xml`; otherwise `gradlew` or `gradle` with an init script that applies `jacoco`, then `test jacocoTestReport`. Every module's exec data is then applied to every module's main classes, one XML file per class directory, so a test in one module can cover code in another | `target/site/jacoco/jacoco.xml`, `build/reports/jacoco/crapper/*.xml`, or `build/reports/jacoco/test/jacocoTestReport.xml` |
 | Go | `go test ./... -coverprofile=...` | `target/coverage/go/coverage.out` |
 | TypeScript | `npm run coverage`, or Vitest `--coverage`, or `npx c8 ... npm test` | `coverage/lcov.info` or `target/coverage/typescript/lcov.info` |
 | Rust | `cargo llvm-cov` or `cargo tarpaulin`, per Cargo package | `target/coverage/rust/lcov.info` |
 | Python | `coverage run` with pytest or unittest, then `coverage lcov` | `target/coverage/python/lcov.info` |
 
 A missing tool or a failed test run scores that language at 0% and still writes the snapshot. Pass `--coverage-command` to replace those defaults with one command of your own. `--no-coverage` is the run that leaves coverage and CRAP as N/A.
+
+Gradle and Maven builds sometimes need an extra argument before JaCoCo will record anything. Repeat `--gradle-arg` or `--maven-arg` for each one. A value may start with `-`, and `--gradle-arg=-Dname` is the same as `--gradle-arg -Dname`. Gradle is started with `--continue`, so a failing test task in one module does not skip the remaining modules. Extra Gradle arguments are placed after `test` and before `jacocoTestReport`, because Gradle attaches a task option such as `--tests` to the task named just before it, and `jacocoTestReport` does not accept `--tests`. Maven arguments are appended after the JaCoCo goals. `-D` and `-P` properties apply either way:
+
+```bash
+./crapper --gradle-arg=-DJacoco
+./crapper --gradle-arg=--tests --gradle-arg=com.example.HashTest
+./crapper --maven-arg=-DskipITs
+```
+
+The same lists can live in `crapper.toml` at the project root. Command-line arguments are added after the file, so a one-off run extends the project's defaults. These arguments are not passed through to `--coverage-command`.
+
+```toml
+gradle-args = ["-DJacoco"]
+maven-args = ["-DskipITs"]
+```
 
 ## Development
 

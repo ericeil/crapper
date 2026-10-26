@@ -7,12 +7,16 @@ tool, or a failed run, scores its functions at 0%.
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.request
 from pathlib import Path
+
+from crapper.coverage import MERGED_JACOCO_DIR
 
 from crapper.discover import is_test_file, language_of
 
@@ -498,12 +502,29 @@ def _runs_inside(module: Path, modules: set[Path]) -> bool:
     )
 
 
-def gradle_command(module: Path, root: Path, init_script: Path) -> list[str]:
-    """The nearest Gradle wrapper, so a subproject uses its build's wrapper."""
+def gradle_command(
+    module: Path,
+    root: Path,
+    init_script: Path,
+    extra: list[str] | tuple[str, ...] = (),
+) -> list[str]:
+    """The nearest Gradle wrapper, so a subproject uses its build's wrapper.
+
+    `extra` sits between `test` and `jacocoTestReport`. Gradle gives a task
+    option to the task named before it, and `jacocoTestReport` rejects
+    `--tests`. `-D` and `-P` are build options and apply from either spot.
+    """
 
     wrapper = _nearest(module, "gradlew", root)
     gradle = str(wrapper / "gradlew") if wrapper is not None else "gradle"
-    return [gradle, "--init-script", str(init_script), "test", "jacocoTestReport"]
+    # --continue so a failing test task in one module does not skip the rest.
+    return [gradle, "--init-script", str(init_script), "--continue", "test", *extra, "jacocoTestReport"]
+
+
+def maven_command(extra: list[str] | tuple[str, ...] = ()) -> list[str]:
+    """JaCoCo's Maven goals, plus any extra arguments from the user."""
+
+    return [*_MAVEN, *extra]
 
 
 def _cover_clojure(root: Path) -> None:
@@ -519,7 +540,12 @@ def _cover_clojure(root: Path) -> None:
         _warn(f"Clojure coverage exited {code}. Clojure coverage will score 0%.")
 
 
-def _cover_jvm(root: Path, files: list[Path]) -> None:
+def _cover_jvm(
+    root: Path,
+    files: list[Path],
+    gradle_args: list[str] | tuple[str, ...],
+    maven_args: list[str] | tuple[str, ...],
+) -> None:
     """Java and Kotlin share one JaCoCo run per module."""
 
     modules = _modules_with(files, _JVM_SUFFIXES, "pom.xml", root)
@@ -527,26 +553,28 @@ def _cover_jvm(root: Path, files: list[Path]) -> None:
     if not modules and not gradle:
         _warn("No pom.xml or build.gradle; skipping Java and Kotlin coverage.")
         return
-    _cover_maven(modules)
-    _cover_gradle(root, gradle)
+    _cover_maven(modules, maven_args)
+    _cover_gradle(root, gradle, gradle_args)
 
 
 def _jvm_failure(code: int, module: Path) -> str:
     return f"JaCoCo coverage exited {code} in {module}. Java and Kotlin coverage will score 0%."
 
 
-def _cover_maven(modules: list[Path]) -> None:
+def _cover_maven(modules: list[Path], extra: list[str] | tuple[str, ...]) -> None:
     for module in modules:
         _clean_dir(module / "target" / "site" / "jacoco")
         exec_file = module / "target" / "jacoco.exec"
         if exec_file.exists():
             exec_file.unlink()
-        code = run_shell(_MAVEN, module)
+        code = run_shell(maven_command(extra), module)
         if code != 0:
             _warn(_jvm_failure(code, module))
 
 
-def _cover_gradle(root: Path, modules: list[Path]) -> None:
+def _cover_gradle(
+    root: Path, modules: list[Path], extra: list[str] | tuple[str, ...]
+) -> None:
     if not modules:
         return
     with tempfile.TemporaryDirectory() as scratch:
@@ -554,9 +582,125 @@ def _cover_gradle(root: Path, modules: list[Path]) -> None:
         init_script.write_text(_GRADLE_INIT, encoding="utf-8")
         for module in modules:
             (module / _GRADLE_REPORT).unlink(missing_ok=True)
-            code = run_shell(gradle_command(module, root, init_script), module)
+            code = run_shell(gradle_command(module, root, init_script, extra), module)
             if code != 0:
                 _warn(_jvm_failure(code, module))
+    _write_merged_jacoco(root)
+
+
+_WALK_SKIP = {".git", ".gradle", "node_modules", "target"}
+_MAIN_CLASS_DIRS = (
+    ("classes", "java", "main"),
+    ("classes", "kotlin", "main"),
+    ("classes", "kotlin", "jvm", "main"),
+    ("classes", "scala", "main"),
+)
+_JACOCO_CLI_JAR = "org.jacoco.cli-0.8.12-nodeps.jar"
+_JACOCO_CLI_URL = (
+    "https://repo1.maven.org/maven2/org/jacoco/org.jacoco.cli/0.8.12/"
+    "org.jacoco.cli-0.8.12-nodeps.jar"
+)
+
+
+def jacoco_class_dirs(root: Path) -> list[Path]:
+    """Main class directories of every Gradle module under `root`."""
+
+    found: list[Path] = []
+    for dirpath, dirnames, _filenames in os.walk(root):
+        dirnames[:] = [name for name in dirnames if name not in _WALK_SKIP and not name.startswith(".")]
+        if Path(dirpath).name != "build":
+            continue
+        build = Path(dirpath)
+        for parts in _MAIN_CLASS_DIRS:
+            candidate = build.joinpath(*parts)
+            if candidate.is_dir():
+                found.append(candidate)
+        dirnames[:] = [name for name in dirnames if name in {"classes", "jacoco"}]
+    return sorted(found)
+
+
+def jacoco_exec_files(root: Path) -> list[Path]:
+    found: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [name for name in dirnames if name not in _WALK_SKIP and not name.startswith(".")]
+        if Path(dirpath).name != "jacoco":
+            continue
+        for name in filenames:
+            if name.endswith(".exec"):
+                found.append(Path(dirpath) / name)
+        dirnames.clear()
+    return sorted(found)
+
+
+def jacoco_report_command(
+    java: str, cli: Path, execs: list[Path], classes: list[Path], xml: Path
+) -> list[str]:
+    command = [java, "-Xmx2g", "-jar", str(cli), "report"]
+    command.extend(str(path) for path in execs)
+    for classes_dir in classes:
+        command.extend(["--classfiles", str(classes_dir)])
+    command.extend(["--xml", str(xml), "--name", "crapper"])
+    return command
+
+
+def _jacoco_cli_jar() -> Path | None:
+    cache = Path.home() / ".cache" / "crapper"
+    jar = cache / _JACOCO_CLI_JAR
+    if jar.is_file() and jar.stat().st_size > 1_000_000:
+        return jar
+    cache.mkdir(parents=True, exist_ok=True)
+    partial = jar.with_suffix(".part")
+    try:
+        with urllib.request.urlopen(_JACOCO_CLI_URL, timeout=60) as response:
+            partial.write_bytes(response.read())
+    except OSError as exc:
+        _warn(f"Could not download JaCoCo CLI: {exc}")
+        if partial.exists():
+            partial.unlink()
+        return None
+    partial.replace(jar)
+    return jar
+
+
+def _merged_report_path(root: Path, classes: Path) -> Path:
+    relative = classes.relative_to(root).as_posix().replace("/", "_")
+    return root / MERGED_JACOCO_DIR / f"{relative}.xml"
+
+
+def _write_merged_jacoco(root: Path) -> None:
+    """XML reports for every module's main classes, using every exec file.
+
+    Gradle's jacocoTestReport task only analyzes the classes of its own
+    project. A root test that calls into a subproject then shows 0% for that
+    code even though the exec file recorded it. JaCoCo also refuses one
+    report that contains two classes of the same name, so each class
+    directory is reported on its own.
+    """
+
+    classes = jacoco_class_dirs(root)
+    execs = jacoco_exec_files(root)
+    if not classes or not execs:
+        return
+    if shutil.which("java") is None:
+        _warn("java is not on PATH. Per-module JaCoCo reports will be used.")
+        return
+    cli = _jacoco_cli_jar()
+    if cli is None:
+        return
+    out = root / MERGED_JACOCO_DIR
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    wrote = False
+    for classes_dir in classes:
+        xml = _merged_report_path(root, classes_dir)
+        code = run_shell(jacoco_report_command("java", cli, execs, [classes_dir], xml), root)
+        if code != 0 or not xml.is_file():
+            xml.unlink(missing_ok=True)
+            continue
+        wrote = True
+    if not wrote:
+        _warn("JaCoCo could not merge module reports. Per-module reports will be used.")
 
 
 def _cover_go(root: Path, files: list[Path]) -> None:
@@ -666,7 +810,13 @@ def _cover_rust(root: Path, files: list[Path]) -> None:
             _warn(f"Rust coverage exited {code} in {module}. Rust coverage will score 0%.")
 
 
-def run_coverage(root: Path, files: list[Path], command: str | None) -> int:
+def run_coverage(
+    root: Path,
+    files: list[Path],
+    command: str | None,
+    gradle_args: list[str] | tuple[str, ...] = (),
+    maven_args: list[str] | tuple[str, ...] = (),
+) -> int:
     """Generate coverage reports for the languages present in `files`.
 
     Returns the custom command's status. A non-zero status means the caller
@@ -688,7 +838,7 @@ def run_coverage(root: Path, files: list[Path], command: str | None) -> int:
     if "clojure" in languages:
         _cover_clojure(root)
     if languages & {"java", "kotlin"}:
-        _cover_jvm(root, files)
+        _cover_jvm(root, files, gradle_args, maven_args)
     if "go" in languages:
         _cover_go(root, files)
     if "typescript" in languages:
