@@ -9,6 +9,7 @@ EXTENSIONS = {
     ".cljs": "clojure",
     ".bb": "clojure",
     ".java": "java",
+    ".kt": "kotlin",
     ".go": "go",
     ".ts": "typescript",
     ".tsx": "typescript",
