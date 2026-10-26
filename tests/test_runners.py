@@ -436,10 +436,11 @@ def test_gradle_command_prefers_the_wrapper_and_passes_the_init_script(tmp_path)
         "test",
         "jacocoTestReport",
     ]
-    assert gradle_command(module, tmp_path, init, ["-DJacoco", "--tests", "demo.AppTest"])[-3:] == [
+    assert gradle_command(module, tmp_path, init, ["-DJacoco", "--tests", "demo.AppTest"])[-4:] == [
         "-DJacoco",
         "--tests",
         "demo.AppTest",
+        "jacocoTestReport",
     ]
     _write(tmp_path, "gradlew", "#!/bin/sh\n")
     assert gradle_command(module, tmp_path, init)[0] == str(tmp_path / "gradlew")
@@ -464,7 +465,7 @@ def test_extra_gradle_and_maven_arguments_are_appended(tmp_path, monkeypatch):
         None,
         gradle_args=["-DJacoco", "--tests", "demo.AppTest"],
     )
-    assert commands[0][-3:] == ["-DJacoco", "--tests", "demo.AppTest"]
+    assert commands[0][-4:] == ["-DJacoco", "--tests", "demo.AppTest", "jacocoTestReport"]
 
     maven_root = tmp_path / "maven"
     _write(maven_root, "pom.xml", "<project/>\n")

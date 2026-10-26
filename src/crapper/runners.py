@@ -506,14 +506,14 @@ def gradle_command(
 ) -> list[str]:
     """The nearest Gradle wrapper, so a subproject uses its build's wrapper.
 
-    `extra` is appended after the tasks. That is where Gradle accepts `-D`
-    system properties, `-P` project properties, and task options such as
-    `--tests`.
+    `extra` sits between `test` and `jacocoTestReport`. Gradle gives a task
+    option to the task named before it, and `jacocoTestReport` rejects
+    `--tests`. `-D` and `-P` are build options and apply from either spot.
     """
 
     wrapper = _nearest(module, "gradlew", root)
     gradle = str(wrapper / "gradlew") if wrapper is not None else "gradle"
-    return [gradle, "--init-script", str(init_script), "test", "jacocoTestReport", *extra]
+    return [gradle, "--init-script", str(init_script), "test", *extra, "jacocoTestReport"]
 
 
 def maven_command(extra: list[str] | tuple[str, ...] = ()) -> list[str]:
