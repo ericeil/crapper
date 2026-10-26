@@ -79,7 +79,7 @@ By default a run deletes the previous report for each language it is about to me
 | Language | Command | Report |
 | --- | --- | --- |
 | Clojure | `clj -M:cov --lcov` (needs `deps.edn` or `bb.edn`) | `target/coverage/` |
-| Java, Kotlin | JaCoCo Maven plugin `0.8.12` in each module with `pom.xml`; otherwise `gradlew` or `gradle` with an init script that applies `jacoco`, then `test jacocoTestReport` | `target/site/jacoco/jacoco.xml` or `build/reports/jacoco/test/jacocoTestReport.xml` |
+| Java, Kotlin | JaCoCo Maven plugin `0.8.12` in each module with `pom.xml`; otherwise `gradlew` or `gradle` with an init script that applies `jacoco`, then `test jacocoTestReport`. Exec files and main classes from every Gradle module are then merged into one report, so a test in one module can cover code in another | `target/site/jacoco/jacoco.xml`, `build/reports/jacoco/crapper/jacoco.xml`, or `build/reports/jacoco/test/jacocoTestReport.xml` |
 | Go | `go test ./... -coverprofile=...` | `target/coverage/go/coverage.out` |
 | TypeScript | `npm run coverage`, or Vitest `--coverage`, or `npx c8 ... npm test` | `coverage/lcov.info` or `target/coverage/typescript/lcov.info` |
 | Rust | `cargo llvm-cov` or `cargo tarpaulin`, per Cargo package | `target/coverage/rust/lcov.info` |

@@ -7,12 +7,16 @@ tool, or a failed run, scores its functions at 0%.
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.request
 from pathlib import Path
+
+from crapper.coverage import MERGED_JACOCO
 
 from crapper.discover import is_test_file, language_of
 
@@ -580,6 +584,107 @@ def _cover_gradle(
             code = run_shell(gradle_command(module, root, init_script, extra), module)
             if code != 0:
                 _warn(_jvm_failure(code, module))
+    _write_merged_jacoco(root)
+
+
+_WALK_SKIP = {".git", ".gradle", "node_modules", "target"}
+_MAIN_CLASS_DIRS = (
+    ("classes", "java", "main"),
+    ("classes", "kotlin", "main"),
+    ("classes", "kotlin", "jvm", "main"),
+    ("classes", "scala", "main"),
+)
+_JACOCO_CLI_JAR = "org.jacoco.cli-0.8.12-nodeps.jar"
+_JACOCO_CLI_URL = (
+    "https://repo1.maven.org/maven2/org/jacoco/org.jacoco.cli/0.8.12/"
+    "org.jacoco.cli-0.8.12-nodeps.jar"
+)
+
+
+def jacoco_class_dirs(root: Path) -> list[Path]:
+    """Main class directories of every Gradle module under `root`."""
+
+    found: list[Path] = []
+    for dirpath, dirnames, _filenames in os.walk(root):
+        dirnames[:] = [name for name in dirnames if name not in _WALK_SKIP and not name.startswith(".")]
+        if Path(dirpath).name != "build":
+            continue
+        build = Path(dirpath)
+        for parts in _MAIN_CLASS_DIRS:
+            candidate = build.joinpath(*parts)
+            if candidate.is_dir():
+                found.append(candidate)
+        dirnames[:] = [name for name in dirnames if name in {"classes", "jacoco"}]
+    return sorted(found)
+
+
+def jacoco_exec_files(root: Path) -> list[Path]:
+    found: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [name for name in dirnames if name not in _WALK_SKIP and not name.startswith(".")]
+        if Path(dirpath).name != "jacoco":
+            continue
+        for name in filenames:
+            if name.endswith(".exec"):
+                found.append(Path(dirpath) / name)
+        dirnames.clear()
+    return sorted(found)
+
+
+def jacoco_report_command(
+    java: str, cli: Path, execs: list[Path], classes: list[Path], xml: Path
+) -> list[str]:
+    command = [java, "-Xmx2g", "-jar", str(cli), "report"]
+    command.extend(str(path) for path in execs)
+    for classes_dir in classes:
+        command.extend(["--classfiles", str(classes_dir)])
+    command.extend(["--xml", str(xml), "--name", "crapper"])
+    return command
+
+
+def _jacoco_cli_jar() -> Path | None:
+    cache = Path.home() / ".cache" / "crapper"
+    jar = cache / _JACOCO_CLI_JAR
+    if jar.is_file() and jar.stat().st_size > 1_000_000:
+        return jar
+    cache.mkdir(parents=True, exist_ok=True)
+    partial = jar.with_suffix(".part")
+    try:
+        with urllib.request.urlopen(_JACOCO_CLI_URL, timeout=60) as response:
+            partial.write_bytes(response.read())
+    except OSError as exc:
+        _warn(f"Could not download JaCoCo CLI: {exc}")
+        if partial.exists():
+            partial.unlink()
+        return None
+    partial.replace(jar)
+    return jar
+
+
+def _write_merged_jacoco(root: Path) -> None:
+    """One XML report for every module's exec data and main classes.
+
+    Gradle's jacocoTestReport task only analyzes the classes of its own
+    project. A root test that calls into a subproject then shows 0% for that
+    code even though the exec file recorded it.
+    """
+
+    classes = jacoco_class_dirs(root)
+    execs = jacoco_exec_files(root)
+    if not classes or not execs:
+        return
+    if shutil.which("java") is None:
+        _warn("java is not on PATH. Per-module JaCoCo reports will be used.")
+        return
+    cli = _jacoco_cli_jar()
+    if cli is None:
+        return
+    xml = root / MERGED_JACOCO
+    xml.parent.mkdir(parents=True, exist_ok=True)
+    code = run_shell(jacoco_report_command("java", cli, execs, classes, xml), root)
+    if code != 0 or not xml.is_file():
+        _warn("JaCoCo could not merge module reports. Per-module reports will be used.")
+        xml.unlink(missing_ok=True)
 
 
 def _cover_go(root: Path, files: list[Path]) -> None:

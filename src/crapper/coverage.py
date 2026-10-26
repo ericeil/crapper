@@ -566,14 +566,29 @@ _JACOCO_REPORTS = (
     "target/site/jacoco/jacoco.xml",
     "build/reports/jacoco/test/jacocoTestReport.xml",
 )
+# One report built from every module's exec file and main classes. A test in
+# the root project often executes subproject classes, which the root
+# jacocoTestReport task does not analyze.
+MERGED_JACOCO = Path("build/reports/jacoco/crapper/jacoco.xml")
 
 
-def _merge_jacoco(root: Path) -> dict[str, list[JacocoMethod]]:
-    paths: list[Path] = []
-    for report in _JACOCO_REPORTS:
+def _jacoco_report_paths(root: Path) -> list[Path]:
+    merged = root / MERGED_JACOCO
+    if merged.is_file():
+        reports = ("target/site/jacoco/jacoco.xml",)
+        paths = [merged]
+    else:
+        reports = _JACOCO_REPORTS
+        paths = []
+    for report in reports:
         paths.append(root / report)
         paths.extend(root.glob(f"*/{report}"))
         paths.extend(root.glob(f"*/*/{report}"))
+    return paths
+
+
+def _merge_jacoco(root: Path) -> dict[str, list[JacocoMethod]]:
+    paths = _jacoco_report_paths(root)
     merged: dict[str, list[JacocoMethod]] = {}
     for text in _merge_texts(paths):
         for key, methods in parse_jacoco_index(text).items():
