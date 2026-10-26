@@ -169,6 +169,108 @@ def test_top_level_function_in_the_default_package():
     ]
 
 
+def test_context_receiver_functions_are_scored(capsys):
+    source = """
+package demo
+
+context(Foo)
+fun choose(a: Boolean, ready: Boolean) = if (a && ready) 1 else 0
+
+context(SimpleDominanceAnalysis<NBId>)
+@JvmName("dominates2")
+infix fun LTACCmd.dominates(y: LTACCmd): Boolean {
+    if (y == this) return true
+    return false
+}
+
+fun plain() = context(1) + 1
+"""
+    functions = functions_in_source(source, "src/demo/Receivers.kt")
+    assert [(f.name, f.namespace, f.complexity, f.start_line) for f in functions] == [
+        ("choose", "demo.ReceiversKt", 3, 5),
+        ("dominates", "demo.ReceiversKt", 2, 8),
+        ("plain", "demo.ReceiversKt", 1, 14),
+    ]
+    assert capsys.readouterr().err == ""
+
+
+def test_context_function_types_do_not_swallow_the_object(capsys):
+    source = """
+package demo
+
+object Box {
+    fun <T> use(f: context(Foo)() -> T): Int {
+        if (f == null) return 0
+        return 1
+    }
+
+    fun other(a: Boolean) = if (a) 1 else 2
+
+    fun suspendable(f: context(Foo) suspend () -> Int) = if (f == null) 0 else 1
+}
+"""
+    functions = functions_in_source(source, "src/demo/Box.kt")
+    assert [(f.namespace, f.name, f.complexity) for f in functions] == [
+        ("demo.Box", "use", 2),
+        ("demo.Box", "other", 2),
+        ("demo.Box", "suspendable", 2),
+    ]
+    assert capsys.readouterr().err == ""
+
+
+def test_a_call_named_context_is_not_a_receiver(capsys):
+    source = """
+package demo
+
+class Tokens {
+    fun exp(): Int {
+        return listOf(1).context(0)
+    }
+
+    private fun param(a: Boolean): Int {
+        if (a) return 1
+        return 0
+    }
+
+    private fun List<Int>.context(ctx: Int): Int {
+        if (ctx > 0 && isNotEmpty()) return this[0]
+        return 0
+    }
+}
+
+fun caller(): Int {
+    val x = context(1)
+    return x
+}
+"""
+    functions = functions_in_source(source, "src/demo/Tokens.kt")
+    assert [(f.namespace, f.name, f.complexity) for f in functions] == [
+        ("demo.Tokens", "exp", 1),
+        ("demo.Tokens", "param", 2),
+        ("demo.Tokens", "context", 3),
+        ("demo.TokensKt", "caller", 1),
+    ]
+    assert capsys.readouterr().err == ""
+
+
+def test_context_in_strings_and_comments_is_not_a_function(capsys):
+    source = """
+package demo
+
+val note = "context(Foo) fun hidden() { if (true) 1 else 0 }"
+// context(Foo) fun commented() { if (true) 1 else 0 }
+/*
+context(Foo)
+fun commentedToo() { if (true) {} }
+*/
+
+fun real(a: Boolean) = if (a) 1 else 0
+"""
+    functions = functions_in_source(source, "src/demo/Notes.kt")
+    assert [(f.name, f.complexity) for f in functions] == [("real", 2)]
+    assert capsys.readouterr().err == ""
+
+
 def test_a_file_with_parse_errors_warns(capsys):
     functions_in_source("package demo\n\nfun ok() {}\n", "src/Ok.kt")
     assert capsys.readouterr().err == ""
