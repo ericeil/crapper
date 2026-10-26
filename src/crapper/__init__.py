@@ -1,3 +1,3 @@
-"""CRAP scores for Clojure, Java, Go, TypeScript, Rust, and Python."""
+"""CRAP scores for Clojure, Java, Kotlin, Go, TypeScript, Rust, and Python."""
 
 __version__ = "0.1.0"
