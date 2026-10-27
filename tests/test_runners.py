@@ -565,7 +565,112 @@ def test_gradle_cleans_only_its_stale_report_and_warns_on_failure(tmp_path, monk
     run_coverage(tmp_path, [_write(tmp_path, "src/A.java", "class A {}\n")], None)
     assert not report.exists()
     assert html.exists() and classes.exists() and exec_file.exists()
-    assert f"JaCoCo coverage exited 1 in {tmp_path}. Java and Kotlin coverage will score 0%." in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert f"JaCoCo coverage exited 1 in {tmp_path}. Java and Kotlin coverage will score 0%." in err
+    assert "coverage data was found and used" not in err
+
+
+def test_gradle_failure_uses_a_merged_jacoco_report(tmp_path, monkeypatch, capsys):
+    def shell(command, cwd):
+        if len(command) > 4 and command[4] == "report":
+            Path(command[command.index("--xml") + 1]).write_text("<report/>", encoding="utf-8")
+            return 0
+        return 1
+
+    monkeypatch.setattr("crapper.runners.run_shell", shell)
+    monkeypatch.setattr("crapper.runners._jacoco_cli_jar", lambda: tmp_path / "cli.jar")
+    monkeypatch.setattr("crapper.runners.shutil.which", lambda name: "/usr/bin/java")
+    _write(tmp_path, "build.gradle", "")
+    _write(tmp_path, "build/classes/kotlin/main/A.class", "x")
+    _write(tmp_path, "build/jacoco/test.exec", "x")
+    run_coverage(tmp_path, [_write(tmp_path, "src/A.java", "class A {}\n")], None)
+    err = capsys.readouterr().err
+    assert f"JaCoCo build exited 1 in {tmp_path}" in err
+    assert "failing tests" in err
+    assert "coverage data was found and used" in err
+    assert "will score 0%" not in err
+    assert list((tmp_path / "build/reports/jacoco/crapper").glob("*.xml"))
+
+
+def test_gradle_failure_uses_a_nested_module_report(tmp_path, monkeypatch, capsys):
+    def shell(command, cwd):
+        report = cwd / "lib/core/build/reports/jacoco/test/jacocoTestReport.xml"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text("<report/>", encoding="utf-8")
+        return 1
+
+    monkeypatch.setattr("crapper.runners.run_shell", shell)
+    _write(tmp_path, "build.gradle", "")
+    run_coverage(tmp_path, [_write(tmp_path, "src/A.kt", "class A\n")], None)
+    err = capsys.readouterr().err
+    assert "coverage data was found and used" in err
+    assert "will score 0%" not in err
+
+
+def test_empty_jacoco_report_still_warns_that_coverage_scores_zero(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("crapper.runners.run_shell", lambda command, cwd: 1)
+    _write(tmp_path, "build.gradle", "")
+    _write(tmp_path, "build/reports/jacoco/crapper/empty.xml", "")
+    run_coverage(tmp_path, [_write(tmp_path, "src/A.java", "class A {}\n")], None)
+    err = capsys.readouterr().err
+    assert f"JaCoCo coverage exited 1 in {tmp_path}. Java and Kotlin coverage will score 0%." in err
+    assert "coverage data was found and used" not in err
+
+
+def test_maven_failure_uses_jacoco_xml_when_the_report_exists(tmp_path, monkeypatch, capsys):
+    def shell(command, cwd):
+        report = cwd / "target/site/jacoco/jacoco.xml"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text("<report/>", encoding="utf-8")
+        return 1
+
+    monkeypatch.setattr("crapper.runners.run_shell", shell)
+    _write(tmp_path, "pom.xml", "<project/>\n")
+    run_coverage(tmp_path, [_write(tmp_path, "src/A.java", "class A {}\n")], None)
+    err = capsys.readouterr().err
+    assert f"JaCoCo build exited 1 in {tmp_path}" in err
+    assert "coverage data was found and used" in err
+    assert "will score 0%" not in err
+
+
+def test_maven_failure_without_a_report_scores_zero(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("crapper.runners.run_shell", lambda command, cwd: 1)
+    _write(tmp_path, "pom.xml", "<project/>\n")
+    stale = _write(tmp_path, "target/site/jacoco/jacoco.xml", "<report/>")
+    run_coverage(tmp_path, [_write(tmp_path, "src/A.java", "class A {}\n")], None)
+    assert not stale.exists()
+    err = capsys.readouterr().err
+    assert f"JaCoCo coverage exited 1 in {tmp_path}. Java and Kotlin coverage will score 0%." in err
+    assert "coverage data was found and used" not in err
+
+
+def test_maven_failure_keeps_a_gradle_report_from_the_same_run(tmp_path, monkeypatch, capsys):
+    maven_root = tmp_path / "maven"
+    gradle_root = tmp_path / "gradle"
+
+    def shell(command, cwd):
+        if Path(command[0]).name == "mvn":
+            return 1
+        report = cwd / "build/reports/jacoco/test/jacocoTestReport.xml"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text("<report/>", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr("crapper.runners.run_shell", shell)
+    _write(maven_root, "pom.xml", "<project/>\n")
+    _write(gradle_root, "build.gradle", "")
+    run_coverage(
+        tmp_path,
+        [
+            _write(maven_root, "src/A.java", "class A {}\n"),
+            _write(gradle_root, "src/B.java", "class B {}\n"),
+        ],
+        None,
+    )
+    err = capsys.readouterr().err
+    assert f"JaCoCo build exited 1 in {maven_root}" in err
+    assert "coverage data was found and used" in err
+    assert "will score 0%" not in err
 
 
 def test_run_shell_returns_the_child_status_and_reports_a_failed_start(tmp_path, monkeypatch, capsys):

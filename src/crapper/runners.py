@@ -1,7 +1,8 @@
 """Run each language's coverage tool, then leave the reports for the loader.
 
 Failures are reported and do not stop analysis. A language with no coverage
-tool, or a failed run, scores its functions at 0%.
+tool scores its functions at 0%. A failed Gradle or Maven build does too
+when it leaves no JaCoCo XML; a report that is present is used.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-from crapper.coverage import MERGED_JACOCO_DIR
+from crapper.coverage import MERGED_JACOCO_DIR, jacoco_reports_found
 
 from crapper.discover import is_test_file, language_of
 
@@ -553,15 +554,35 @@ def _cover_jvm(
     if not modules and not gradle:
         _warn("No pom.xml or build.gradle; skipping Java and Kotlin coverage.")
         return
-    _cover_maven(modules, maven_args)
-    _cover_gradle(root, gradle, gradle_args)
+    failures = _cover_maven(modules, maven_args)
+    failures.extend(_cover_gradle(root, gradle, gradle_args))
+    found = jacoco_reports_found(root)
+    for code, module in failures:
+        _warn(_jvm_failure(code, module, found=found))
 
 
-def _jvm_failure(code: int, module: Path) -> str:
-    return f"JaCoCo coverage exited {code} in {module}. Java and Kotlin coverage will score 0%."
+def _jvm_failure(code: int, module: Path, *, found: bool) -> str:
+    """What to print after a non-zero Gradle or Maven exit.
+
+    `found` means a JaCoCo XML report is on disk and will be read. A failing
+    test suite often still writes that report; only an empty result scores 0%.
+    """
+
+    if found:
+        return (
+            f"JaCoCo build exited {code} in {module} "
+            "(for example, failing tests), but coverage data was found and used."
+        )
+    return (
+        f"JaCoCo coverage exited {code} in {module}. "
+        "Java and Kotlin coverage will score 0%."
+    )
 
 
-def _cover_maven(modules: list[Path], extra: list[str] | tuple[str, ...]) -> None:
+def _cover_maven(
+    modules: list[Path], extra: list[str] | tuple[str, ...]
+) -> list[tuple[int, Path]]:
+    failures: list[tuple[int, Path]] = []
     for module in modules:
         _clean_dir(module / "target" / "site" / "jacoco")
         exec_file = module / "target" / "jacoco.exec"
@@ -569,14 +590,16 @@ def _cover_maven(modules: list[Path], extra: list[str] | tuple[str, ...]) -> Non
             exec_file.unlink()
         code = run_shell(maven_command(extra), module)
         if code != 0:
-            _warn(_jvm_failure(code, module))
+            failures.append((code, module))
+    return failures
 
 
 def _cover_gradle(
     root: Path, modules: list[Path], extra: list[str] | tuple[str, ...]
-) -> None:
+) -> list[tuple[int, Path]]:
     if not modules:
-        return
+        return []
+    failures: list[tuple[int, Path]] = []
     with tempfile.TemporaryDirectory() as scratch:
         init_script = Path(scratch) / "jacoco.gradle"
         init_script.write_text(_GRADLE_INIT, encoding="utf-8")
@@ -584,8 +607,9 @@ def _cover_gradle(
             (module / _GRADLE_REPORT).unlink(missing_ok=True)
             code = run_shell(gradle_command(module, root, init_script, extra), module)
             if code != 0:
-                _warn(_jvm_failure(code, module))
+                failures.append((code, module))
     _write_merged_jacoco(root)
+    return failures
 
 
 _WALK_SKIP = {".git", ".gradle", "node_modules", "target"}
@@ -834,6 +858,7 @@ def run_coverage(
     Returns the custom command's status. A non-zero status means the caller
     must not read reports already on disk. Per-language runs return 0; a
     failed tool is reported and that language scores 0% when it wrote nothing.
+    JaCoCo XML left by a failed Gradle or Maven build is still read.
     """
 
     root = root.resolve()
