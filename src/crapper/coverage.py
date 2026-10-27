@@ -622,6 +622,12 @@ def _jacoco_report_paths(root: Path) -> list[Path]:
     return paths
 
 
+def jacoco_reports_found(root: Path) -> bool:
+    """True when the loader will read a non-empty JaCoCo XML report."""
+
+    return any(path.is_file() and path.stat().st_size > 0 for path in _jacoco_report_paths(root))
+
+
 def _merge_jacoco(root: Path) -> dict[str, list[JacocoMethod]]:
     paths = _jacoco_report_paths(root)
     merged: dict[str, list[JacocoMethod]] = {}

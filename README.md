@@ -85,7 +85,7 @@ By default a run deletes the previous report for each language it is about to me
 | Rust | `cargo llvm-cov` or `cargo tarpaulin`, per Cargo package | `target/coverage/rust/lcov.info` |
 | Python | `coverage run` with pytest or unittest, then `coverage lcov` | `target/coverage/python/lcov.info` |
 
-A missing tool or a failed test run scores that language at 0% and still writes the snapshot. Pass `--coverage-command` to replace those defaults with one command of your own. `--no-coverage` is the run that leaves coverage and CRAP as N/A.
+A missing tool scores that language at 0% and still writes the snapshot. A Gradle or Maven build that exits non-zero does the same when it leaves no JaCoCo XML. When that build fails and a report is on disk, for example because tests failed after JaCoCo wrote its data, the report is used. Pass `--coverage-command` to replace those defaults with one command of your own. `--no-coverage` is the run that leaves coverage and CRAP as N/A.
 
 Gradle and Maven builds sometimes need an extra argument before JaCoCo will record anything. Repeat `--gradle-arg` or `--maven-arg` for each one. A value may start with `-`, and `--gradle-arg=-Dname` is the same as `--gradle-arg -Dname`. Gradle is started with `--continue`, so a failing test task in one module does not skip the remaining modules. Extra Gradle arguments are placed after `test` and before `jacocoTestReport`, because Gradle attaches a task option such as `--tests` to the task named just before it, and `jacocoTestReport` does not accept `--tests`. Maven arguments are appended after the JaCoCo goals. `-D` and `-P` properties apply either way:
 
