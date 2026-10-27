@@ -589,11 +589,19 @@ def _cover_gradle(
 
 
 _WALK_SKIP = {".git", ".gradle", "node_modules", "target"}
+# `main` is the production output. `jmh` is the benchmark source set; those
+# classes are not under `main`, so a report that only reads `main` cannot
+# join them. Test outputs stay out of the report.
 _MAIN_CLASS_DIRS = (
     ("classes", "java", "main"),
     ("classes", "kotlin", "main"),
     ("classes", "kotlin", "jvm", "main"),
     ("classes", "scala", "main"),
+    ("classes", "java", "jmh"),
+    ("classes", "kotlin", "jmh"),
+    ("classes", "kotlin", "jvm", "jmh"),
+    ("classes", "scala", "jmh"),
+    ("jmh-classes",),
 )
 _JACOCO_CLI_JAR = "org.jacoco.cli-0.8.12-nodeps.jar"
 _JACOCO_CLI_URL = (
@@ -603,7 +611,11 @@ _JACOCO_CLI_URL = (
 
 
 def jacoco_class_dirs(root: Path) -> list[Path]:
-    """Main class directories of every Gradle module under `root`."""
+    """Class directories JaCoCo should read for every Gradle module under `root`.
+
+    Production classes, plus the JMH benchmark output when that source set
+    was compiled. Test class directories are not included.
+    """
 
     found: list[Path] = []
     for dirpath, dirnames, _filenames in os.walk(root):

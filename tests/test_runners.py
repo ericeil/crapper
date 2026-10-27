@@ -497,6 +497,10 @@ def test_merged_jacoco_report_sees_every_module(tmp_path):
     _write(tmp_path, ".git/build/jacoco/test.exec", "x")
     assert jacoco_class_dirs(tmp_path) == classes
     assert jacoco_exec_files(tmp_path) == execs
+    jmh = _write(tmp_path, "lib/core/build/classes/kotlin/jmh/demo/Bench.class", "x").parents[1]
+    _write(tmp_path, "lib/core/build/classes/kotlin/test/demo/BenchTest.class", "x")
+    assert jmh in jacoco_class_dirs(tmp_path)
+    assert all("test" not in path.parts for path in jacoco_class_dirs(tmp_path))
     command = jacoco_report_command("java", tmp_path / "cli.jar", execs, classes, tmp_path / "out.xml")
     assert command[:5] == ["java", "-Xmx2g", "-jar", str(tmp_path / "cli.jar"), "report"]
     assert str(execs[0]) in command and str(execs[1]) in command

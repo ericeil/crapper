@@ -403,15 +403,37 @@ def _mangled_name(classes, class_names, method_name) -> str | None:
     return None
 
 
+def _jacoco_method_names(function: Function) -> list[str]:
+    """Method names to try, JVM name first.
+
+    A backticked Kotlin identifier is stored without the backticks. `@JvmName`
+    is a separate lookup name; the report still shows the source name.
+    """
+
+    names = []
+    if function.jacoco_name:
+        names.append(function.jacoco_name)
+    names.append(function.name)
+    if function.name.startswith("`") and function.name.endswith("`") and len(function.name) > 2:
+        names.append(function.name[1:-1])
+    return list(dict.fromkeys(names))
+
+
 def _jacoco_percent(classes, function: Function) -> float | None:
     names = _jacoco_names(function)
-    found = _jacoco_from_index(classes, names, function.name, function.start_line)
-    if found is not None or function.language != "kotlin":
-        return found
-    mangled = _mangled_name(classes, names, function.name)
-    if mangled is None:
-        return None
-    return _jacoco_from_index(classes, names, mangled, function.start_line)
+    for method in _jacoco_method_names(function):
+        found = _jacoco_from_index(classes, names, method, function.start_line)
+        if found is not None:
+            return found
+        if function.language != "kotlin":
+            continue
+        mangled = _mangled_name(classes, names, method)
+        if mangled is None:
+            continue
+        found = _jacoco_from_index(classes, names, mangled, function.start_line)
+        if found is not None:
+            return found
+    return None
 
 
 def _instruction_counter(method):
@@ -464,6 +486,16 @@ class CoverageBundle:
     jacoco: dict[str, list[JacocoMethod]] | None = None
     form_html: dict[str, dict[int, tuple[int, int]]] = field(default_factory=dict)
     source_parts: list[tuple[str, ...]] = field(default_factory=list)
+    _class_names: set[str] | None = field(default=None, init=False, repr=False, compare=False)
+
+    def jacoco_class_present(self, function: Function) -> bool:
+        """True when the report contains the class JaCoCo would use for `function`."""
+
+        if not self.jacoco:
+            return False
+        if self._class_names is None:
+            self._class_names = {key.split("#", 1)[0] for key in self.jacoco}
+        return any(name in self._class_names for name in _jacoco_names(function))
 
     def bind_sources(self, paths: list[str]) -> None:
         """Remember project files so a short path cannot take a longer file's report."""
