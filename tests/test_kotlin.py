@@ -1,3 +1,7 @@
+from pathlib import Path
+
+from crapper.analyze import analyze_files
+from crapper.coverage import CoverageBundle, parse_jacoco_index
 from crapper.languages.kotlin import file_class, functions_in_source
 
 SCORE = """
@@ -283,3 +287,210 @@ def test_a_file_with_parse_errors_warns(capsys):
     assert capsys.readouterr().err == (
         "src/Broken.kt: Kotlin parse error; scores in this file may be wrong.\n"
     )
+
+
+def test_backticked_operators_use_the_jvm_name():
+    source = """
+package demo
+
+class Ops {
+    operator fun `==`(other: Any?) = this === other
+    infix fun <T> T.`to?`(v: T?) = v
+    fun `return`() = 1
+}
+"""
+    functions = functions_in_source(source, "src/demo/Ops.kt")
+    assert [(f.name, f.jacoco_name, f.namespace) for f in functions] == [
+        ("==", None, "demo.Ops"),
+        ("to?", None, "demo.Ops"),
+        ("return", None, "demo.Ops"),
+    ]
+
+
+def test_function_jvm_name_is_the_lookup_name_and_inline_has_no_zero():
+    source = """
+package demo
+
+@JvmName("getLhs1")
+fun getLhs(): Int {
+    if (true) return 1
+    return 0
+}
+
+inline fun <reified T> enumSetOf(x: T) = x
+
+@JvmName("deserializeFileExt")
+inline fun <reified T> String.deserializeFile(): T = x
+"""
+    functions = functions_in_source(source, "src/demo/Names.kt")
+    assert [(f.name, f.jacoco_name, f.unmatched_coverage) for f in functions] == [
+        ("getLhs", "getLhs1", 0.0),
+        ("enumSetOf", None, None),
+        ("deserializeFile", "deserializeFileExt", None),
+    ]
+
+
+def test_jmh_source_set_has_no_coverage_unless_the_class_was_compiled(tmp_path):
+    path = tmp_path / "lib" / "src" / "jmh" / "kotlin" / "datastructures" / "MapBenchmark.kt"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "package datastructures\n\nfun pickObj(): Int {\n    if (true) return 1\n    return 0\n}\n",
+        encoding="utf-8",
+    )
+    missing = analyze_files([path], tmp_path, CoverageBundle(jacoco={}))
+    assert missing[0].name == "pickObj"
+    assert missing[0].coverage is None
+    present = analyze_files(
+        [path],
+        tmp_path,
+        CoverageBundle(
+            jacoco=parse_jacoco_index(
+                """
+<report>
+  <package name="datastructures">
+    <class name="datastructures/MapBenchmarkKt">
+      <method name="pickObj" line="3">
+        <counter type="INSTRUCTION" missed="1" covered="3"/>
+      </method>
+    </class>
+  </package>
+</report>
+"""
+            )
+        ),
+    )
+    assert present[0].coverage == 75.0
+
+
+def test_where_identifier_escaped_dollar_and_while_comparison_parse(capsys):
+    source = """
+package demo
+
+fun <T> keep(x: T): T where T : Any {
+    if (x == null) return x
+    return x
+}
+
+fun rewrite(where: List<Int>): Int {
+    if (where.none { it > 0 }) {
+        return@flatMap Stream.empty<Pair<A, B>>()
+    }
+    where.mapIndexedNotNull { index, simple ->
+        if (simple > 0) index else null
+    }
+    return where.size
+}
+
+fun pairs(): Pair<String, Int> {
+    val where = "block"
+    return where to 1
+}
+
+fun sym(name: String, args: List<String>) =
+    "${name}\\$${args.joinToString("\\$$") { it }}"
+
+fun merge(out: MutableList<Int>): Int {
+    var i = 0
+    while (i < out.size - 1) {
+        if (i > 0) return i
+        i++
+    }
+    return i
+}
+
+fun shift(by: Int) = when {
+    by < 0 -> 1
+    by > 0 -> 2
+    else -> 0
+}
+"""
+    functions = functions_in_source(source, "src/demo/Repairs.kt")
+    by_name = {f.name: f for f in functions}
+    assert set(by_name) == {"keep", "rewrite", "pairs", "sym", "merge", "shift"}
+    assert by_name["keep"].complexity == 2
+    assert by_name["rewrite"].complexity == 3
+    assert by_name["merge"].complexity == 3
+    assert by_name["shift"].complexity == 4
+    assert by_name["sym"].start_line == 24
+    assert capsys.readouterr().err == ""
+
+
+def _fixture(name: str) -> str:
+    return (Path(__file__).parent / "fixtures" / name).read_text(encoding="utf-8")
+
+
+def test_a_broken_class_keeps_the_class_name(capsys):
+    # The string never closes, so the class is an ERROR node. The header
+    # (`class`, the name, `{`) is still there, and the function keeps that name
+    # instead of the file facade.
+    functions = functions_in_source(_fixture("broken_class.kt"), "src/demo/Foo.kt")
+    assert ("before", "demo.Foo") in [(f.name, f.namespace) for f in functions]
+    assert "demo.FooKt" not in {f.namespace for f in functions if f.name == "before"}
+    assert "parse error" in capsys.readouterr().err
+
+
+def test_an_escaped_dollar_does_not_drop_the_class(capsys):
+    functions = functions_in_source(_fixture("dollar_class.kt"), "src/demo/Foo.kt")
+    assert [(f.name, f.namespace) for f in functions] == [
+        ("before", "demo.Foo"),
+        ("after", "demo.Foo"),
+        ("top", "demo.FooKt"),
+    ]
+    assert capsys.readouterr().err == ""
+
+
+def test_inline_miss_is_na_and_a_missing_method_on_a_known_class_is_zero(tmp_path):
+    path = tmp_path / "src" / "main" / "kotlin" / "demo" / "Sets.kt"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "package demo\n"
+        "inline fun <reified T> enumSetOf(x: T) = x\n"
+        "fun plain(): Int {\n    if (true) return 1\n    return 0\n}\n"
+        "class Ghost {\n    fun gone() = 1\n}\n",
+        encoding="utf-8",
+    )
+    report = """
+<report>
+  <package name="demo">
+    <class name="demo/SetsKt">
+      <method name="plain" line="3">
+        <counter type="INSTRUCTION" missed="4" covered="0"/>
+      </method>
+    </class>
+  </package>
+</report>
+"""
+    entries = analyze_files([path], tmp_path, CoverageBundle(jacoco=parse_jacoco_index(report)))
+    by_name = {entry.name: entry for entry in entries}
+    assert by_name["enumSetOf"].coverage is None
+    assert by_name["enumSetOf"].crap is None
+    assert by_name["plain"].coverage == 0.0
+    assert by_name["gone"].coverage is None
+    joined = analyze_files(
+        [path],
+        tmp_path,
+        CoverageBundle(
+            jacoco=parse_jacoco_index(
+                """
+<report>
+  <package name="demo">
+    <class name="demo/SetsKt">
+      <method name="enumSetOf" line="2">
+        <counter type="INSTRUCTION" missed="0" covered="2"/>
+      </method>
+      <method name="getLhs1" line="3">
+        <counter type="INSTRUCTION" missed="1" covered="1"/>
+      </method>
+    </class>
+    <class name="demo/Ops">
+      <method name="==" line="2">
+        <counter type="INSTRUCTION" missed="0" covered="4"/>
+      </method>
+    </class>
+  </package>
+</report>
+"""
+            )
+        ),
+    )
+    assert {entry.name: entry.coverage for entry in joined}["enumSetOf"] == 100.0

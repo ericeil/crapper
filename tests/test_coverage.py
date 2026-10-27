@@ -264,6 +264,41 @@ def test_kotlin_joins_jacoco_on_the_binary_class_and_jvm_name():
     assert bundle.percent_for(missing) is None
 
 
+def test_kotlin_joins_backticked_names_and_function_jvm_names():
+    xml = """
+<report>
+  <package name="demo">
+    <class name="demo/Ops">
+      <method name="==" line="4">
+        <counter type="INSTRUCTION" missed="0" covered="2"/>
+      </method>
+      <method name="to?" line="8">
+        <counter type="INSTRUCTION" missed="1" covered="1"/>
+      </method>
+    </class>
+    <class name="demo/NamesKt">
+      <method name="getLhs1" line="3">
+        <counter type="INSTRUCTION" missed="3" covered="1"/>
+      </method>
+    </class>
+  </package>
+</report>
+"""
+    bundle = CoverageBundle(jacoco=parse_jacoco_index(xml))
+    equals = _kotlin(name="==", namespace="demo.Ops", jacoco_class="demo.Ops", start_line=4)
+    to_q = _kotlin(name="to?", namespace="demo.Ops", jacoco_class="demo.Ops", start_line=8)
+    renamed = _kotlin(
+        name="getLhs",
+        jacoco_name="getLhs1",
+        namespace="demo.NamesKt",
+        jacoco_class="demo.NamesKt",
+        start_line=3,
+    )
+    assert bundle.percent_for(equals) == 100.0
+    assert bundle.percent_for(to_q) == 50.0
+    assert bundle.percent_for(renamed) == 25.0
+
+
 def test_java_does_not_match_kotlin_mangled_names():
     bundle = CoverageBundle(jacoco=parse_jacoco_index(KOTLIN_JACOCO))
     java = function(

@@ -12,17 +12,27 @@ from crapper.model import Entry, Function
 def _coverage(bundle: CoverageBundle | None, function: Function) -> float | None:
     """Percentage for one function.
 
-    None means coverage was not requested (`--no-coverage`). A function the
-    report does not mention scores 0%, so it sorts with the other scores
-    instead of sinking to the bottom as N/A.
+    None means coverage was not requested (`--no-coverage`), or the function
+    cannot have a JaCoCo method: it is inline and the report has no method,
+    it lives in a source set that was not compiled into the report, or its
+    class is absent from a report that does exist. A method the report simply
+    does not mention still scores 0%.
     """
 
     if bundle is None:
         return None
     found = bundle.percent_for(function)
-    if found is None:
-        return 0.0
-    return found
+    if found is not None:
+        return found
+    if function.unmatched_coverage is None:
+        return None
+    if (
+        function.language in ("java", "kotlin")
+        and bundle.jacoco is not None
+        and not bundle.jacoco_class_present(function)
+    ):
+        return None
+    return 0.0
 
 
 def _source_path(file: Path, root: Path) -> str:

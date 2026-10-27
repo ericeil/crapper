@@ -13,6 +13,12 @@ class Function:
     path: str
     language: str
     jacoco_class: str | None = None
+    # JVM method name when it differs from `name` (`@JvmName`).
+    jacoco_name: str | None = None
+    # Score used when the coverage report has no method for this function.
+    # 0.0 keeps a real miss in the ranking. None means there is no class-file
+    # method to measure, so the row stays N/A instead of a silent 0%.
+    unmatched_coverage: float | None = 0.0
     # UTF-8 byte span of the function. -1 when the language does not record it.
     # Mutator uses the span to give a nested handler the sites inside it.
     start_byte: int = -1
