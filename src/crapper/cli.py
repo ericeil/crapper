@@ -22,7 +22,7 @@ from crapper.discover import (
 )
 from crapper.metrics import write_metrics
 from crapper.report import format_report
-from crapper.runners import run_coverage
+from crapper.runners import run_coverage, validate_jacoco_version
 
 _SKIPPED_DIRS = ", ".join(sorted(SKIP_DIRS | TEST_DIRS))
 _TEST_PATTERNS = ", ".join(
@@ -64,6 +64,12 @@ Options:
                                 with '-', as in --gradle-arg=-DJacoco.
   --maven-arg <arg>             Extra argument for the Maven JaCoCo run.
                                 Repeat for more than one.
+  --jacoco-version <version>    JaCoCo toolVersion for the Gradle init script
+                                when the build has not set one. Default: 0.8.12,
+                                used only when Gradle's bundled JaCoCo is older.
+                                A version given here is written even if Gradle's
+                                bundled JaCoCo is newer. crapper.toml may set
+                                jacoco-version; this flag replaces it.
   --threshold <number>          Exit 2 when the worst CRAP score is above this.
 
 Arguments:
@@ -78,9 +84,11 @@ named {_SKIPPED_DIRS} are skipped, as are {_TEST_PATTERNS}.
 Coverage, when it is produced:
   Clojure      clj -M:cov --lcov, then Cloverage form counts or LCOV
   Java/Kotlin  Maven or Gradle JaCoCo instruction coverage, for each pom.xml
-               or build.gradle module. Extra arguments come from crapper.toml
-               (gradle-args, maven-args) and then from --gradle-arg and
-               --maven-arg. They are not added to --coverage-command.
+               or build.gradle module. The Gradle init script pins JaCoCo
+               0.8.12 when the build still uses Gradle's older bundled version.
+               Extra arguments come from crapper.toml (gradle-args, maven-args,
+               jacoco-version) and then from --gradle-arg, --maven-arg, and
+               --jacoco-version. They are not added to --coverage-command.
   Go           go test ./... -coverprofile=...
   TypeScript   npm run coverage, Vitest's own LCOV, or c8 around npm test
   Rust         cargo llvm-cov, or cargo tarpaulin, in the nearest Cargo.toml
@@ -110,6 +118,7 @@ class Options:
     coverage_command: str | None = None
     gradle_args: list[str] = field(default_factory=list)
     maven_args: list[str] = field(default_factory=list)
+    jacoco_version: str | None = None
     threshold: float | None = None
     changed: bool = False
 
@@ -166,6 +175,10 @@ def parse_args(argv: list[str] | None = None) -> Options:
             if arg == "--maven-arg" or arg.startswith("--maven-arg="):
                 value, index = _option_value(args, index, "--maven-arg")
                 options.maven_args.append(value)
+                continue
+            if arg == "--jacoco-version" or arg.startswith("--jacoco-version="):
+                value, index = _option_value(args, index, "--jacoco-version")
+                options.jacoco_version = validate_jacoco_version(value)
                 continue
             if arg == "--threshold":
                 raw = _take(args, index, arg)
@@ -324,14 +337,15 @@ def _coverage_bundle(
     files: list[Path],
     gradle_args: list[str],
     maven_args: list[str],
+    jacoco_version: str | None,
 ):
     if options.no_coverage:
         return None
     if options.use_existing_coverage:
         return load_bundle(root)
-    if options.coverage_command and (gradle_args or maven_args):
+    if options.coverage_command and (gradle_args or maven_args or jacoco_version):
         print(
-            "--gradle-arg and --maven-arg are not added to --coverage-command.",
+            "--gradle-arg, --maven-arg, and --jacoco-version are not added to --coverage-command.",
             file=sys.stderr,
         )
     status = run_coverage(
@@ -340,6 +354,7 @@ def _coverage_bundle(
         options.coverage_command,
         gradle_args=gradle_args,
         maven_args=maven_args,
+        jacoco_version=jacoco_version,
     )
     if options.coverage_command and status not in (0, None):
         return CoverageBundle()
@@ -366,7 +381,7 @@ def run(argv: list[str] | None = None) -> int:
 
     root = options.project_root.resolve()
     try:
-        configured_gradle, configured_maven = build_tool_args(root)
+        configured_gradle, configured_maven, configured_jacoco = build_tool_args(root)
         files = select_files(options)
     except ConfigError as exc:
         print(str(exc), file=sys.stderr)
@@ -387,6 +402,7 @@ def run(argv: list[str] | None = None) -> int:
             files,
             [*configured_gradle, *options.gradle_args],
             [*configured_maven, *options.maven_args],
+            options.jacoco_version or configured_jacoco,
         ),
     )
     metrics = write_metrics(entries, root)

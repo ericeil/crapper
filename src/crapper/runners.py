@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -21,12 +22,18 @@ from crapper.coverage import MERGED_JACOCO_DIR, jacoco_reports_found
 
 from crapper.discover import is_test_file, language_of
 
+# JaCoCo 0.8.7 is the first release that accepts the Kotlin 1.5+ `*S KotlinDebug`
+# SMAP. 0.8.12 matches the CLI used to merge Gradle exec data, and it understands
+# the debug info emitted by Kotlin 1.8.
+JACOCO_VERSION = "0.8.12"
+_JACOCO_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+){1,3}(?:-[0-9A-Za-z.]+)?$")
+
 _MAVEN = [
     "mvn",
     "-q",
-    "org.jacoco:jacoco-maven-plugin:0.8.12:prepare-agent",
+    f"org.jacoco:jacoco-maven-plugin:{JACOCO_VERSION}:prepare-agent",
     "test",
-    "org.jacoco:jacoco-maven-plugin:0.8.12:report",
+    f"org.jacoco:jacoco-maven-plugin:{JACOCO_VERSION}:report",
 ]
 
 _JVM_SUFFIXES = (".java", ".kt")
@@ -34,17 +41,69 @@ _GRADLE_BUILD_FILES = ("build.gradle", "build.gradle.kts")
 _GRADLE_SETTINGS_FILES = ("settings.gradle", "settings.gradle.kts")
 _GRADLE_REPORT = Path("build/reports/jacoco/test/jacocoTestReport.xml")
 # Applied from outside the build, like the Maven goals, so the project's
-# build file needs no change.
+# build file needs no change. `allprojects` here runs before the build script,
+# so a project that assigns `jacoco.toolVersion` keeps that assignment.
+# Gradle's bundled JaCoCo is replaced only when it is older than the version
+# crapper selected. An explicit version is written even when the bundled one
+# is newer; the build script can still replace it afterwards.
 _GRADLE_INIT = """\
-allprojects {
+def crapperJacocoVersion = '{version}'
+def crapperJacocoForce = {force}
+
+def crapperJacocoOlder = {{ left, right ->
+    def parts = {{ text ->
+        def found = []
+        def matcher = (text.toString() =~ /(\\d+)/)
+        while (matcher.find()) {{
+            found << (matcher.group(1) as int)
+        }}
+        found
+    }}
+    def a = parts(left)
+    def b = parts(right)
+    def n = Math.max(a.size(), b.size())
+    for (def i = 0; i < n; i++) {{
+        def av = i < a.size() ? a[i] : 0
+        def bv = i < b.size() ? b[i] : 0
+        if (av != bv) {{
+            return av < bv
+        }}
+    }}
+    false
+}}
+
+allprojects {{
     apply plugin: 'jacoco'
-    tasks.withType(JacocoReport) {
-        reports {
+    if (crapperJacocoForce || crapperJacocoOlder(jacoco.toolVersion, crapperJacocoVersion)) {{
+        jacoco.toolVersion = crapperJacocoVersion
+    }}
+    tasks.withType(JacocoReport) {{
+        reports {{
             xml.required = true
-        }
-    }
-}
+        }}
+    }}
+}}
 """
+
+
+def validate_jacoco_version(version: str) -> str:
+    """Reject a version that cannot be embedded in the Gradle init script."""
+
+    if not isinstance(version, str) or not _JACOCO_VERSION_RE.fullmatch(version):
+        raise ValueError(f"JaCoCo version must look like {JACOCO_VERSION}, not {version!r}")
+    return version
+
+
+def gradle_init_script(version: str = JACOCO_VERSION, *, explicit: bool = False) -> str:
+    """Groovy init script that applies JaCoCo and selects `version`.
+
+    `explicit` writes `version` even when Gradle already bundles a newer
+    JaCoCo. Either way the build script runs afterwards and can assign
+    `jacoco.toolVersion` itself.
+    """
+
+    validate_jacoco_version(version)
+    return _GRADLE_INIT.format(version=version, force="true" if explicit else "false")
 
 
 def _warn(message: str) -> None:
@@ -546,6 +605,7 @@ def _cover_jvm(
     files: list[Path],
     gradle_args: list[str] | tuple[str, ...],
     maven_args: list[str] | tuple[str, ...],
+    jacoco_version: str | None = None,
 ) -> None:
     """Java and Kotlin share one JaCoCo run per module."""
 
@@ -555,7 +615,7 @@ def _cover_jvm(
         _warn("No pom.xml or build.gradle; skipping Java and Kotlin coverage.")
         return
     failures = _cover_maven(modules, maven_args)
-    failures.extend(_cover_gradle(root, gradle, gradle_args))
+    failures.extend(_cover_gradle(root, gradle, gradle_args, jacoco_version))
     found = jacoco_reports_found(root)
     for code, module in failures:
         _warn(_jvm_failure(code, module, found=found))
@@ -595,14 +655,21 @@ def _cover_maven(
 
 
 def _cover_gradle(
-    root: Path, modules: list[Path], extra: list[str] | tuple[str, ...]
+    root: Path,
+    modules: list[Path],
+    extra: list[str] | tuple[str, ...],
+    jacoco_version: str | None = None,
 ) -> list[tuple[int, Path]]:
     if not modules:
         return []
     failures: list[tuple[int, Path]] = []
     with tempfile.TemporaryDirectory() as scratch:
         init_script = Path(scratch) / "jacoco.gradle"
-        init_script.write_text(_GRADLE_INIT, encoding="utf-8")
+        script = gradle_init_script(
+            jacoco_version or JACOCO_VERSION,
+            explicit=jacoco_version is not None,
+        )
+        init_script.write_text(script, encoding="utf-8")
         for module in modules:
             (module / _GRADLE_REPORT).unlink(missing_ok=True)
             code = run_shell(gradle_command(module, root, init_script, extra), module)
@@ -627,10 +694,10 @@ _MAIN_CLASS_DIRS = (
     ("classes", "scala", "jmh"),
     ("jmh-classes",),
 )
-_JACOCO_CLI_JAR = "org.jacoco.cli-0.8.12-nodeps.jar"
+_JACOCO_CLI_JAR = f"org.jacoco.cli-{JACOCO_VERSION}-nodeps.jar"
 _JACOCO_CLI_URL = (
-    "https://repo1.maven.org/maven2/org/jacoco/org.jacoco.cli/0.8.12/"
-    "org.jacoco.cli-0.8.12-nodeps.jar"
+    "https://repo1.maven.org/maven2/org/jacoco/org.jacoco.cli/"
+    f"{JACOCO_VERSION}/org.jacoco.cli-{JACOCO_VERSION}-nodeps.jar"
 )
 
 
@@ -852,6 +919,7 @@ def run_coverage(
     command: str | None,
     gradle_args: list[str] | tuple[str, ...] = (),
     maven_args: list[str] | tuple[str, ...] = (),
+    jacoco_version: str | None = None,
 ) -> int:
     """Generate coverage reports for the languages present in `files`.
 
@@ -875,7 +943,7 @@ def run_coverage(
     if "clojure" in languages:
         _cover_clojure(root)
     if languages & {"java", "kotlin"}:
-        _cover_jvm(root, files, gradle_args, maven_args)
+        _cover_jvm(root, files, gradle_args, maven_args, jacoco_version)
     if "go" in languages:
         _cover_go(root, files)
     if "typescript" in languages:

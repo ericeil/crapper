@@ -245,9 +245,10 @@ def test_build_tool_arguments_accept_a_leading_dash_and_a_project_file(tmp_path,
     _write(tmp_path, "build.gradle", "")
     seen = {}
 
-    def fake(root, files, command, gradle_args=(), maven_args=()):
+    def fake(root, files, command, gradle_args=(), maven_args=(), jacoco_version=None):
         seen["gradle"] = list(gradle_args)
         seen["maven"] = list(maven_args)
+        seen["jacoco"] = jacoco_version
         return 0
 
     monkeypatch.setattr("crapper.cli.run_coverage", fake)
@@ -266,6 +267,7 @@ def test_build_tool_arguments_accept_a_leading_dash_and_a_project_file(tmp_path,
     )
     assert seen["gradle"] == ["-DJacoco", "--tests"]
     assert seen["maven"] == ["-DskipITs"]
+    assert seen["jacoco"] is None
 
     _write(
         tmp_path,
@@ -275,6 +277,16 @@ def test_build_tool_arguments_accept_a_leading_dash_and_a_project_file(tmp_path,
     assert run(["--root", str(tmp_path), "--gradle-arg", "--offline"]) == 0
     assert seen["gradle"] == ["-DJacoco", "--offline"]
     assert seen["maven"] == ["-q"]
+    assert seen["jacoco"] is None
+
+    _write(tmp_path, "crapper.toml", 'jacoco-version = "0.8.11"\n')
+    assert run(["--root", str(tmp_path)]) == 0
+    assert seen["jacoco"] == "0.8.11"
+    assert run(["--root", str(tmp_path), "--jacoco-version", "0.8.13"]) == 0
+    assert seen["jacoco"] == "0.8.13"
+    assert run(["--jacoco-version=0.8.12'; println x"]) == 1
+    _write(tmp_path, "crapper.toml", 'jacoco-version = "not a version"\n')
+    assert run(["--root", str(tmp_path), "--no-coverage"]) == 1
 
     _write(tmp_path, "crapper.toml", "gradle-args = 1\n")
     assert run(["--root", str(tmp_path)]) == 1
