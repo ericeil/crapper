@@ -79,7 +79,7 @@ By default a run deletes the previous report for each language it is about to me
 | Language | Command | Report |
 | --- | --- | --- |
 | Clojure | `clj -M:cov --lcov` (needs `deps.edn` or `bb.edn`) | `target/coverage/` |
-| Java, Kotlin | JaCoCo Maven plugin `0.8.12` in each module with `pom.xml`; otherwise `gradlew` or `gradle` with an init script that applies `jacoco`, then `test jacocoTestReport`. Every module's exec data is then applied to every module's main classes and to its JMH class directory when that source set was compiled, one XML file per class directory, so a test in one module can cover code in another | `target/site/jacoco/jacoco.xml`, `build/reports/jacoco/crapper/*.xml`, or `build/reports/jacoco/test/jacocoTestReport.xml` |
+| Java, Kotlin | JaCoCo Maven plugin `0.8.12` in each module with `pom.xml`; otherwise `gradlew` or `gradle` with an init script that applies `jacoco` and selects JaCoCo `0.8.12` when Gradle's bundled version is older, then `test jacocoTestReport`. Every module's exec data is then applied to every module's main classes and to its JMH class directory when that source set was compiled, one XML file per class directory, so a test in one module can cover code in another | `target/site/jacoco/jacoco.xml`, `build/reports/jacoco/crapper/*.xml`, or `build/reports/jacoco/test/jacocoTestReport.xml` |
 | Go | `go test ./... -coverprofile=...` | `target/coverage/go/coverage.out` |
 | TypeScript | `npm run coverage`, or Vitest `--coverage`, or `npx c8 ... npm test` | `coverage/lcov.info` or `target/coverage/typescript/lcov.info` |
 | Rust | `cargo llvm-cov` or `cargo tarpaulin`, per Cargo package | `target/coverage/rust/lcov.info` |
@@ -95,11 +95,18 @@ Gradle and Maven builds sometimes need an extra argument before JaCoCo will reco
 ./crapper --maven-arg=-DskipITs
 ```
 
-The same lists can live in `crapper.toml` at the project root. Command-line arguments are added after the file, so a one-off run extends the project's defaults. These arguments are not passed through to `--coverage-command`.
+The Gradle init script applies JaCoCo before the build script runs. When `jacoco.toolVersion` is still the version bundled with that Gradle, and that version is older than `0.8.12`, the script sets `0.8.12`. Gradle 7's default JaCoCo (`0.8.6`) stops in `jacocoTestReport` on Kotlin 1.5+ class files (`Unexpected SMAP line: *S KotlinDebug`); `0.8.12` reads them. A newer JaCoCo already bundled with Gradle stays in place. A build that assigns `jacoco.toolVersion` keeps that assignment. `--jacoco-version` selects a different version for a build that has not assigned one, including when the bundled version is newer than the one you name:
+
+```bash
+./crapper --jacoco-version 0.8.13
+```
+
+The same lists, and the JaCoCo version, can live in `crapper.toml` at the project root. Command-line arguments are added after the file, so a one-off run extends the project's defaults. `--jacoco-version` replaces `jacoco-version` from the file. These settings are not passed through to `--coverage-command`. After the Gradle run, JaCoCo CLI `0.8.12` still merges every module's exec data into `build/reports/jacoco/crapper/*.xml`, including when `jacocoTestReport` fails and leaves execution data behind.
 
 ```toml
 gradle-args = ["-DJacoco"]
 maven-args = ["-DskipITs"]
+jacoco-version = "0.8.13"
 ```
 
 ## Development

@@ -23,6 +23,7 @@ from crapper.runners import (
     _rust_kind,
     _vitest_version,
     gradle_command,
+    gradle_init_script,
     gradle_modules,
     maven_command,
     python_coverage_commands,
@@ -547,12 +548,46 @@ def test_gradle_run_applies_jacoco_through_a_temporary_init_script(tmp_path, mon
     _write(tmp_path, "build.gradle", "")
     run_coverage(tmp_path, [_write(tmp_path, "src/A.java", "class A {}\n")], None)
     assert len(seen) == 1
+    assert seen[0] == gradle_init_script()
     assert "allprojects" in seen[0]
     assert "apply plugin: 'jacoco'" in seen[0]
+    assert "crapperJacocoVersion = '0.8.12'" in seen[0]
+    assert "crapperJacocoForce = false" in seen[0]
+    assert "crapperJacocoOlder(jacoco.toolVersion, crapperJacocoVersion)" in seen[0]
+    assert "jacoco.toolVersion = crapperJacocoVersion" in seen[0]
     assert "tasks.withType(JacocoReport)" in seen[0]
     assert "xml.required = true" in seen[0]
+    assert "afterEvaluate" not in seen[0]
     assert not scripts[0].exists()
     assert not (tmp_path / "init.gradle").exists()
+
+
+def test_gradle_init_script_pins_an_explicit_jacoco_version(tmp_path, monkeypatch):
+    seen: list[str] = []
+
+    def shell(command, cwd):
+        script = Path(command[command.index("--init-script") + 1])
+        seen.append(script.read_text(encoding="utf-8"))
+        return 0
+
+    monkeypatch.setattr("crapper.runners.run_shell", shell)
+    _write(tmp_path, "build.gradle", "")
+    run_coverage(
+        tmp_path,
+        [_write(tmp_path, "src/A.java", "class A {}\n")],
+        None,
+        jacoco_version="0.8.13",
+    )
+    assert seen == [gradle_init_script("0.8.13", explicit=True)]
+    assert "crapperJacocoVersion = '0.8.13'" in seen[0]
+    assert "crapperJacocoForce = true" in seen[0]
+
+
+def test_jacoco_version_must_be_numeric():
+    with pytest.raises(ValueError, match="0.8.12"):
+        gradle_init_script("0.8.12'; println 'owned")
+    with pytest.raises(ValueError):
+        gradle_init_script("")
 
 
 def test_gradle_cleans_only_its_stale_report_and_warns_on_failure(tmp_path, monkeypatch, capsys):
