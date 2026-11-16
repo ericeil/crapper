@@ -18,9 +18,18 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-from crapper.coverage import MERGED_JACOCO_DIR, jacoco_reports_found
-
 from crapper.discover import is_test_file, language_of
+
+
+def _coverage_module():
+    """The coverage loader.
+
+    Imported on use: coverage imports nearest_marker from this module.
+    """
+
+    from crapper import coverage
+
+    return coverage
 
 # JaCoCo 0.8.7 is the first release that accepts the Kotlin 1.5+ `*S KotlinDebug`
 # SMAP. 0.8.12 matches the CLI used to merge Gradle exec data, and it understands
@@ -136,7 +145,7 @@ def run_shell(command: str | list[str], cwd: Path) -> int:
     return completed.returncode
 
 
-def _nearest(start: Path, marker: str, stop: Path) -> Path | None:
+def nearest_marker(start: Path, marker: str, stop: Path) -> Path | None:
     current = start if start.is_dir() else start.parent
     stop = stop.resolve()
     while True:
@@ -291,7 +300,7 @@ def typescript_packages(root: Path, files: list[Path]) -> list[Path]:
     for file in files:
         if language_of(file) != "typescript":
             continue
-        package = _nearest(file, "package.json", root)
+        package = nearest_marker(file, "package.json", root)
         if package is not None:
             packages.add(package.resolve())
     return sorted(packages)
@@ -405,7 +414,7 @@ def python_roots(root: Path, files: list[Path]) -> list[Path]:
             continue
         module = None
         for marker in _PYTHON_MARKERS:
-            module = _nearest(Path(file), marker, root)
+            module = nearest_marker(Path(file), marker, root)
             if module is not None:
                 break
         found.add((module or root).resolve())
@@ -505,14 +514,14 @@ def _modules_with(
     for file in files:
         if Path(file).suffix not in suffixes:
             continue
-        module = _nearest(file, marker, root)
+        module = nearest_marker(file, marker, root)
         if module is not None:
             modules.add(module)
     return sorted(modules)
 
 
 def _nearest_gradle(file: Path, root: Path) -> Path | None:
-    found = [_nearest(file, marker, root) for marker in _GRADLE_BUILD_FILES]
+    found = [nearest_marker(file, marker, root) for marker in _GRADLE_BUILD_FILES]
     modules = [module for module in found if module is not None]
     return max(modules, key=lambda module: len(module.parts), default=None)
 
@@ -530,7 +539,7 @@ def gradle_modules(root: Path, files: list[Path]) -> list[Path]:
         module = _nearest_gradle(file, root)
         if module is None:
             continue
-        maven = _nearest(file, "pom.xml", root)
+        maven = nearest_marker(file, "pom.xml", root)
         if maven is None or len(module.parts) > len(maven.parts):
             modules.add(module)
     return [module for module in sorted(modules) if not _runs_inside(module, modules)]
@@ -575,7 +584,7 @@ def gradle_command(
     `--tests`. `-D` and `-P` are build options and apply from either spot.
     """
 
-    wrapper = _nearest(module, "gradlew", root)
+    wrapper = nearest_marker(module, "gradlew", root)
     gradle = str(wrapper / "gradlew") if wrapper is not None else "gradle"
     # --continue so a failing test task in one module does not skip the rest.
     return [gradle, "--init-script", str(init_script), "--continue", "test", *extra, "jacocoTestReport"]
@@ -616,7 +625,7 @@ def _cover_jvm(
         return
     failures = _cover_maven(modules, maven_args)
     failures.extend(_cover_gradle(root, gradle, gradle_args, jacoco_version))
-    found = jacoco_reports_found(root)
+    found = _coverage_module().jacoco_reports_found(root)
     for code, module in failures:
         _warn(_jvm_failure(code, module, found=found))
 
@@ -767,7 +776,7 @@ def _jacoco_cli_jar() -> Path | None:
 
 def _merged_report_path(root: Path, classes: Path) -> Path:
     relative = classes.relative_to(root).as_posix().replace("/", "_")
-    return root / MERGED_JACOCO_DIR / f"{relative}.xml"
+    return root / _coverage_module().MERGED_JACOCO_DIR / f"{relative}.xml"
 
 
 def _write_merged_jacoco(root: Path) -> None:
@@ -790,7 +799,7 @@ def _write_merged_jacoco(root: Path) -> None:
     cli = _jacoco_cli_jar()
     if cli is None:
         return
-    out = root / MERGED_JACOCO_DIR
+    out = root / _coverage_module().MERGED_JACOCO_DIR
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
